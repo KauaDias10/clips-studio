@@ -1,18 +1,62 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import type { CaptionStyle } from '../lib/types'
 import { t } from '../lib/i18n'
+import BannerPreview from './BannerPreview'
 
 export const DEFAULT_CAPTION_STYLE: Required<CaptionStyle> = {
   font: 'Arial',
   font_size: 84,
   color: '#FFFFFF',
   position: 'bottom',
+  caption_y: 77,
   words_per_caption: 3,
   uppercase: true,
   highlight: false,
   highlight_color: '#FFE600',
   second_speaker: false,
-  second_speaker_color: '#5CE1FF'
+  second_speaker_color: '#5CE1FF',
+  title_banner: false,
+  title_banner_color: '#E01B24',
+  title_banner_text_color: '#FFFFFF',
+  title_banner_font: 'Impact',
+  title_banner_x: 50,
+  title_banner_y: 50,
+  title_banner_size: 100,
+  title_banner_uppercase: true,
+  title_banner_text: '',
+  title_banner_captions: 'next_to',
+  title_banner_seconds: 0,
+  title_banner_pad: 18,
+  title_banner_box: 'lines',
+  title_banner_opacity: 100,
+  title_banner_outline: 0,
+  title_banner_outline_color: '#000000',
+  title_banner_shadow: 0,
+  title_banner_italic: false,
+  title_banner_spacing: 0,
+  title_banner_tilt: 0,
+  reveal: false
+}
+
+// Banner geometry at 1080x1920, as video_editor/title_banner.py lays it out.
+const BANNER_FONT = 78
+const BANNER_LINE = 1.18
+const CAPTION_GAP = 22
+const CAPTION_ROOM = 260
+
+/** Where the captions go with the banner on, as title_banner.caption_placement
+ *  decides: 'above' / 'below' the box, or null (their own position). */
+function captionSide(style: Required<CaptionStyle>): 'above' | 'below' | null {
+  if (
+    !style.title_banner ||
+    style.position === 'top' ||
+    style.position === 'custom' ||
+    style.title_banner_captions === 'keep'
+  )
+    return null
+  const half = (2 * BANNER_FONT * (style.title_banner_size / 100) * BANNER_LINE + 2 * style.title_banner_pad) / 2
+  const top = (style.title_banner_y / 100) * 1920 - half
+  return top - CAPTION_GAP >= CAPTION_ROOM ? 'above' : 'below'
 }
 
 /** Fonts on every stock Windows install — matches video/captions.py FONTS. */
@@ -26,11 +70,44 @@ export const CAPTION_FONTS = [
   'Segoe UI',
   'Georgia',
   'Comic Sans MS',
-  'Courier New'
+  'Courier New',
+  'Segoe UI Black',
+  'Bahnschrift',
+  'Franklin Gothic Medium',
+  'Calibri',
+  'Candara',
+  'Corbel',
+  'Cambria',
+  'Constantia',
+  'Palatino Linotype',
+  'Times New Roman',
+  'Consolas',
+  'Lucida Console',
+  'Segoe Print',
+  'Segoe Script',
+  'Ink Free',
+  'Gabriola',
+  // Shipped with the app (assets/fonts): the short-form caption classics.
+  'Montserrat ExtraBold',
+  'Montserrat Black',
+  'Bebas Neue',
+  'Anton'
 ]
 
 /** Live example of how the burned-in captions will look (9:16 mock). */
-function CaptionExample({ style }: { style: Required<CaptionStyle> }): JSX.Element {
+function CaptionExample({
+  style,
+  onMoveBanner,
+  onMoveCaption
+}: {
+  style: Required<CaptionStyle>
+  /** Dragging the banner in the example moves it (x, y in % of the frame). */
+  onMoveBanner?: (x: number, y: number) => void
+  /** Dragging a hand-placed caption moves it (y in % of the frame). */
+  onMoveCaption?: (y: number) => void
+}): JSX.Element {
+  const frame = useRef<HTMLDivElement>(null)
+  const [dragging, setDragging] = useState(false)
   // Show one caption group of exactly words_per_caption words — the same
   // grouping the burn-in uses, so changing the setting changes the example.
   const sample = ['your', 'captions', 'look', 'like', 'this', 'onscreen']
@@ -46,18 +123,82 @@ function CaptionExample({ style }: { style: Required<CaptionStyle> }): JSX.Eleme
   }, [style.highlight, words.length])
   const align =
     style.position === 'top' ? 'items-start' : style.position === 'middle' ? 'items-center' : 'items-end'
+  const placed = style.position === 'custom'
+  const [movingCaption, setMovingCaption] = useState(false)
+  const moveCaptionTo = (e: React.PointerEvent): void => {
+    const box = frame.current?.getBoundingClientRect()
+    if (!box || !onMoveCaption) return
+    const y = Math.round(Math.max(8, Math.min(98, ((e.clientY - box.top) / box.height) * 100)))
+    if (y !== style.caption_y) onMoveCaption(y)
+  }
+  // With the title banner, captions sit right next to its box (see captionSide).
+  const side = captionSide(style)
+  const grow = style.title_banner_size / 100
+  // Half the box's height, % of the frame (two lines, as most titles are).
+  const halfPct = ((2 * BANNER_FONT * grow * BANNER_LINE + 2 * style.title_banner_pad) / 2 / 1920) * 100
+  const gapPct = (CAPTION_GAP / 1920) * 100
+
+  const moveTo = (e: React.PointerEvent): void => {
+    const box = frame.current?.getBoundingClientRect()
+    if (!box || !onMoveBanner) return
+    const x = Math.round(Math.max(10, Math.min(90, ((e.clientX - box.left) / box.width) * 100)))
+    const y = Math.round(Math.max(5, Math.min(95, ((e.clientY - box.top) / box.height) * 100)))
+    if (x !== style.title_banner_x || y !== style.title_banner_y) onMoveBanner(x, y)
+  }
+
+  const banner = style.title_banner ? (
+    <BannerPreview
+      style={style}
+      title={t('Your clip title goes here')}
+      dragging={dragging}
+      hint={onMoveBanner ? t('Drag to move the title') : undefined}
+      handlers={
+        onMoveBanner
+          ? {
+              onPointerDown: (e) => {
+                e.currentTarget.setPointerCapture(e.pointerId)
+                setDragging(true)
+              },
+              onPointerMove: (e) => dragging && moveTo(e),
+              onPointerUp: () => setDragging(false),
+              onPointerCancel: () => setDragging(false)
+            }
+          : undefined
+      }
+    />
+  ) : null
   return (
     <div
-      className={`relative rounded-lg bg-gradient-to-br from-slate-700 via-slate-800 to-slate-900 aspect-[9/16] max-h-44 mx-auto w-auto flex ${align} justify-center overflow-hidden`}
+      ref={frame}
+      className={`relative rounded-lg bg-gradient-to-br from-slate-700 via-slate-800 to-slate-900 aspect-[9/16] ${style.title_banner || placed ? 'max-h-72' : 'max-h-44'} mx-auto w-auto flex ${side || placed ? '' : align} justify-center overflow-hidden`}
+      style={{ containerType: 'size' }}
       aria-label={t('Caption style example')}
     >
+      {banner}
       <p
-        className="text-center px-2 py-4 leading-tight"
+        className={`text-center px-2 leading-tight select-none ${side || placed ? 'absolute inset-x-0' : 'py-4'} ${
+          placed && onMoveCaption ? (movingCaption ? 'cursor-grabbing' : 'cursor-grab') : ''
+        }`}
+        title={placed && onMoveCaption ? t('Drag to move the captions') : undefined}
+        onPointerDown={(e) => {
+          if (!placed || !onMoveCaption) return
+          e.currentTarget.setPointerCapture(e.pointerId)
+          setMovingCaption(true)
+        }}
+        onPointerMove={(e) => movingCaption && moveCaptionTo(e)}
+        onPointerUp={() => setMovingCaption(false)}
+        onPointerCancel={() => setMovingCaption(false)}
         style={{
+          ...(placed ? { bottom: `${100 - style.caption_y}%`, touchAction: 'none' } : {}),
+          ...(side === 'above' ? { bottom: `${100 - style.title_banner_y + halfPct + gapPct}%` } : {}),
+          ...(side === 'below' ? { top: `${style.title_banner_y + halfPct + gapPct}%` } : {}),
           fontFamily: `'${style.font}', sans-serif`,
           color: style.color,
-          // 84px at 1920 tall ≈ scale into this ~176px-tall mock
-          fontSize: `${(style.font_size / 1920) * 176 * 2.2}px`,
+          // With the banner: true to scale (84px of a 1920-tall frame), so the
+          // two sit as they will. Without it, enlarged to read in the small mock.
+          fontSize: style.title_banner || placed
+            ? `${(style.font_size * 100) / 1920}cqh`
+            : `${(style.font_size / 1920) * 176 * 2.2}px`,
           fontWeight: 700,
           WebkitTextStroke: '0.8px black',
           textShadow: '1px 1px 2px rgba(0,0,0,0.9)'
@@ -90,7 +231,9 @@ export default function CaptionStyleControls({
   style,
   onChange,
   hideWordsPerCaption = false,
-  hideSecondSpeaker = false
+  hideSecondSpeaker = false,
+  hideTitleBanner = false,
+  showTitleText = false
 }: {
   idPrefix: string
   style: Required<CaptionStyle>
@@ -101,6 +244,11 @@ export default function CaptionStyleControls({
   hideWordsPerCaption?: boolean
   /** Translated subtitles are burned in one colour, whoever is talking. */
   hideSecondSpeaker?: boolean
+  /** Translated subtitles: the banner belongs to the clip, not to them. */
+  hideTitleBanner?: boolean
+  /** One clip's editor: its banner can say something other than its title.
+   *  Not for a whole job, where one text would go on every clip. */
+  showTitleText?: boolean
 }): JSX.Element {
   return (
     <>
@@ -162,8 +310,25 @@ export default function CaptionStyleControls({
             <option value="bottom">Bottom</option>
             <option value="middle">Middle</option>
             <option value="top">Top</option>
+            <option value="custom">Free (drag it)</option>
           </select>
         </div>
+        {style.position === 'custom' && (
+          <div className="col-span-2">
+            <label htmlFor={`${idPrefix}-cap-y`} className="label">
+              Caption height ({style.caption_y}%)
+            </label>
+            <input
+              id={`${idPrefix}-cap-y`}
+              type="range"
+              min={8}
+              max={98}
+              className="mt-2 w-full accent-[#38BDF8]"
+              value={style.caption_y}
+              onChange={(e) => onChange('caption_y', Number(e.target.value))}
+            />
+          </div>
+        )}
         {!hideWordsPerCaption && (
           <div>
             <label htmlFor={`${idPrefix}-words`} className="label">
@@ -192,6 +357,21 @@ export default function CaptionStyleControls({
           onChange={(e) => onChange('uppercase', e.target.checked)}
         />
         UPPERCASE captions
+      </label>
+
+      <label
+        className="flex items-center gap-2 cursor-pointer text-sm"
+        title={t(
+          'Each word shows up the moment it is said, instead of the whole line appearing ahead of the voice.'
+        )}
+      >
+        <input
+          type="checkbox"
+          className="size-4 accent-[#38BDF8]"
+          checked={style.reveal}
+          onChange={(e) => onChange('reveal', e.target.checked)}
+        />
+        Show words as they&apos;re said
       </label>
 
       <div className="flex items-center gap-3">
@@ -243,9 +423,303 @@ export default function CaptionStyleControls({
         </div>
       )}
 
+      {!hideTitleBanner && (
+        <div className="flex flex-col gap-3">
+          <label
+            className="flex items-center gap-2 cursor-pointer text-sm"
+            title={t(
+              "The clip's title in a coloured box on the video, for the whole clip. Drag it in the example to move it. Captions sit right next to it, unless they are set to Top."
+            )}
+          >
+            <input
+              type="checkbox"
+              className="size-4 accent-[#38BDF8]"
+              checked={style.title_banner}
+              onChange={(e) => onChange('title_banner', e.target.checked)}
+            />
+            Title banner on the video
+          </label>
+
+          {style.title_banner && (
+            <div className="grid grid-cols-2 gap-3">
+              {showTitleText && (
+                <div className="col-span-2">
+                  <label htmlFor={`${idPrefix}-banner-text`} className="label">
+                    Title text
+                  </label>
+                  <input
+                    id={`${idPrefix}-banner-text`}
+                    className="input mt-1"
+                    maxLength={120}
+                    placeholder={t("The clip's title")}
+                    value={style.title_banner_text}
+                    onChange={(e) => onChange('title_banner_text', e.target.value)}
+                  />
+                </div>
+              )}
+              <div className="col-span-2">
+                <label htmlFor={`${idPrefix}-banner-font`} className="label">
+                  Title font
+                </label>
+                <select
+                  id={`${idPrefix}-banner-font`}
+                  className="input mt-1"
+                  value={style.title_banner_font}
+                  style={{ fontFamily: `'${style.title_banner_font}', sans-serif` }}
+                  onChange={(e) => onChange('title_banner_font', e.target.value)}
+                >
+                  {CAPTION_FONTS.map((f) => (
+                    <option key={f} value={f} style={{ fontFamily: `'${f}', sans-serif` }}>
+                      {f}
+                    </option>
+                  ))}
+                </select>
+              </div>
+              <div>
+                <label htmlFor={`${idPrefix}-banner-bg`} className="label">
+                  Banner colour
+                </label>
+                <input
+                  id={`${idPrefix}-banner-bg`}
+                  type="color"
+                  className="mt-1 h-9 w-full rounded-lg bg-raised cursor-pointer"
+                  value={style.title_banner_color}
+                  onChange={(e) => onChange('title_banner_color', e.target.value.toUpperCase())}
+                />
+              </div>
+              <div>
+                <label htmlFor={`${idPrefix}-banner-fg`} className="label">
+                  Title colour
+                </label>
+                <input
+                  id={`${idPrefix}-banner-fg`}
+                  type="color"
+                  className="mt-1 h-9 w-full rounded-lg bg-raised cursor-pointer"
+                  value={style.title_banner_text_color}
+                  onChange={(e) => onChange('title_banner_text_color', e.target.value.toUpperCase())}
+                />
+              </div>
+              <div className="col-span-2">
+                <label htmlFor={`${idPrefix}-banner-size`} className="label">
+                  Title size ({style.title_banner_size}%)
+                </label>
+                <input
+                  id={`${idPrefix}-banner-size`}
+                  type="range"
+                  min={50}
+                  max={200}
+                  step={5}
+                  className="mt-2 w-full accent-[#38BDF8]"
+                  value={style.title_banner_size}
+                  onChange={(e) => onChange('title_banner_size', Number(e.target.value))}
+                />
+              </div>
+              <div>
+                <label htmlFor={`${idPrefix}-banner-pad`} className="label">
+                  Banner thickness ({style.title_banner_pad})
+                </label>
+                <input
+                  id={`${idPrefix}-banner-pad`}
+                  type="range"
+                  min={0}
+                  max={80}
+                  step={2}
+                  className="mt-2 w-full accent-[#38BDF8]"
+                  value={style.title_banner_pad}
+                  onChange={(e) => onChange('title_banner_pad', Number(e.target.value))}
+                />
+              </div>
+              <div>
+                <label htmlFor={`${idPrefix}-banner-secs`} className="label">
+                  {style.title_banner_seconds > 0
+                    ? `${t('Time on screen')} (${style.title_banner_seconds}s)`
+                    : `${t('Time on screen')} (${t('whole clip')})`}
+                </label>
+                <input
+                  id={`${idPrefix}-banner-secs`}
+                  type="range"
+                  min={0}
+                  max={30}
+                  step={0.5}
+                  className="mt-2 w-full accent-[#38BDF8]"
+                  value={style.title_banner_seconds}
+                  onChange={(e) => onChange('title_banner_seconds', Number(e.target.value))}
+                />
+              </div>
+              <div>
+                <label htmlFor={`${idPrefix}-banner-x`} className="label">
+                  Left / right ({style.title_banner_x}%)
+                </label>
+                <input
+                  id={`${idPrefix}-banner-x`}
+                  type="range"
+                  min={10}
+                  max={90}
+                  className="mt-2 w-full accent-[#38BDF8]"
+                  value={style.title_banner_x}
+                  onChange={(e) => onChange('title_banner_x', Number(e.target.value))}
+                />
+              </div>
+              <div>
+                <label htmlFor={`${idPrefix}-banner-y`} className="label">
+                  Up / down ({style.title_banner_y}%)
+                </label>
+                <input
+                  id={`${idPrefix}-banner-y`}
+                  type="range"
+                  min={5}
+                  max={95}
+                  className="mt-2 w-full accent-[#38BDF8]"
+                  value={style.title_banner_y}
+                  onChange={(e) => onChange('title_banner_y', Number(e.target.value))}
+                />
+              </div>
+              <div className="col-span-2">
+                <label htmlFor={`${idPrefix}-banner-captions`} className="label">
+                  Captions with the title
+                </label>
+                <select
+                  id={`${idPrefix}-banner-captions`}
+                  className="input mt-1"
+                  value={style.title_banner_captions}
+                  onChange={(e) =>
+                    onChange('title_banner_captions', e.target.value as CaptionStyle['title_banner_captions'])
+                  }
+                >
+                  <option value="next_to">Right next to the title</option>
+                  <option value="keep">Where Position puts them</option>
+                </select>
+              </div>
+              <div className="col-span-2">
+                <label htmlFor={`${idPrefix}-banner-box`} className="label">
+                  Banner style
+                </label>
+                <select
+                  id={`${idPrefix}-banner-box`}
+                  className="input mt-1"
+                  value={style.title_banner_box}
+                  onChange={(e) => onChange('title_banner_box', e.target.value as CaptionStyle['title_banner_box'])}
+                >
+                  <option value="lines">A box round each line</option>
+                  <option value="block">One box round the whole title</option>
+                  <option value="none">No box (words only)</option>
+                </select>
+              </div>
+              {style.title_banner_box !== 'none' && (
+                <div className="col-span-2">
+                  <label htmlFor={`${idPrefix}-banner-opacity`} className="label">
+                    Banner opacity ({style.title_banner_opacity}%)
+                  </label>
+                  <input
+                    id={`${idPrefix}-banner-opacity`}
+                    type="range"
+                    min={0}
+                    max={100}
+                    step={5}
+                    className="mt-2 w-full accent-[#38BDF8]"
+                    value={style.title_banner_opacity}
+                    onChange={(e) => onChange('title_banner_opacity', Number(e.target.value))}
+                  />
+                </div>
+              )}
+              <div>
+                <label htmlFor={`${idPrefix}-banner-outline`} className="label">
+                  Letter outline ({style.title_banner_outline})
+                </label>
+                <div className="flex items-center gap-2 mt-2">
+                  <input
+                    id={`${idPrefix}-banner-outline`}
+                    type="range"
+                    min={0}
+                    max={16}
+                    className="w-full accent-[#38BDF8]"
+                    value={style.title_banner_outline}
+                    onChange={(e) => onChange('title_banner_outline', Number(e.target.value))}
+                  />
+                  <input
+                    type="color"
+                    aria-label={t('Outline colour')}
+                    className="h-7 w-10 rounded-md bg-raised cursor-pointer shrink-0"
+                    value={style.title_banner_outline_color}
+                    onChange={(e) => onChange('title_banner_outline_color', e.target.value.toUpperCase())}
+                  />
+                </div>
+              </div>
+              <div>
+                <label htmlFor={`${idPrefix}-banner-shadow`} className="label">
+                  Shadow ({style.title_banner_shadow})
+                </label>
+                <input
+                  id={`${idPrefix}-banner-shadow`}
+                  type="range"
+                  min={0}
+                  max={16}
+                  className="mt-3 w-full accent-[#38BDF8]"
+                  value={style.title_banner_shadow}
+                  onChange={(e) => onChange('title_banner_shadow', Number(e.target.value))}
+                />
+              </div>
+              <div>
+                <label htmlFor={`${idPrefix}-banner-spacing`} className="label">
+                  Letter spacing ({style.title_banner_spacing})
+                </label>
+                <input
+                  id={`${idPrefix}-banner-spacing`}
+                  type="range"
+                  min={-4}
+                  max={24}
+                  className="mt-2 w-full accent-[#38BDF8]"
+                  value={style.title_banner_spacing}
+                  onChange={(e) => onChange('title_banner_spacing', Number(e.target.value))}
+                />
+              </div>
+              <div>
+                <label htmlFor={`${idPrefix}-banner-tilt`} className="label">
+                  Tilt ({style.title_banner_tilt}°)
+                </label>
+                <input
+                  id={`${idPrefix}-banner-tilt`}
+                  type="range"
+                  min={-20}
+                  max={20}
+                  className="mt-2 w-full accent-[#38BDF8]"
+                  value={style.title_banner_tilt}
+                  onChange={(e) => onChange('title_banner_tilt', Number(e.target.value))}
+                />
+              </div>
+              <label className="flex items-center gap-2 cursor-pointer text-sm">
+                <input
+                  type="checkbox"
+                  className="size-4 accent-[#38BDF8]"
+                  checked={style.title_banner_italic}
+                  onChange={(e) => onChange('title_banner_italic', e.target.checked)}
+                />
+                Italic title
+              </label>
+              <label className="flex items-center gap-2 cursor-pointer text-sm">
+                <input
+                  type="checkbox"
+                  className="size-4 accent-[#38BDF8]"
+                  checked={style.title_banner_uppercase}
+                  onChange={(e) => onChange('title_banner_uppercase', e.target.checked)}
+                />
+                UPPERCASE title
+              </label>
+            </div>
+          )}
+        </div>
+      )}
+
       <div>
         <p className="label mb-1">Example</p>
-        <CaptionExample style={style} />
+        <CaptionExample
+          style={hideTitleBanner ? { ...style, title_banner: false } : style}
+          onMoveBanner={(x, y) => {
+            onChange('title_banner_x', x)
+            onChange('title_banner_y', y)
+          }}
+          onMoveCaption={(y) => onChange('caption_y', y)}
+        />
       </div>
     </>
   )

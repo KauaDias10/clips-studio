@@ -342,6 +342,12 @@ double-click, one progress bar. After that it runs offline.
 
 ### From source
 
+**One click on Windows:** run `instalar.bat` once (it installs Python 3.12,
+Node.js, Ollama, FFmpeg, the libraries and the `gemma3:4b` model through
+winget), then open the app with `iniciar.bat`.
+
+By hand:
+
 ```bash
 git clone https://github.com/ColinGPT9/clips-studio
 cd clips-studio

@@ -40,7 +40,9 @@ def test_every_layout_stays_on_the_canvas_in_even_sizes(preset):
 
 @pytest.mark.parametrize("preset", [k for k, v in layout.PRESETS.items() if v["type"] == "stack"])
 def test_stacked_rows_meet_exactly_top_to_bottom(preset):
-    p = _plan(preset, ui_box=[0.3, 0.0, 0.4, 0.08], cam2=[0.75, 0.0, 0.25, 1 / 3])
+    # Zoomed to fill: the rows ARE the Short. (Whole, the game row is the
+    # game's own height and a blur fills the rest: the test below.)
+    p = _plan(preset, ui_box=[0.3, 0.0, 0.4, 0.08], cam2=[0.75, 0.0, 0.25, 1 / 3], game_fit="fill")
     edges = sorted({(e.dest[1], e.dest[1] + e.dest[3]) for e in p.elements
                     if e.role not in layout.PRESETS[preset].get("overlay", [])})
     assert edges[0][0] == 0 and edges[-1][1] == 1920
@@ -340,7 +342,8 @@ def test_the_graph_places_every_element_at_its_region():
     assert "geq=" in circle and "hypot(X-W/2,Y-H/2)" in circle
     zoom = compose.filter_graph(_plan("fullscreen", cam=None, game_fit="fill"), vf_extra="eq=saturation=1.1",
                                 ass_name="c.ass")
-    assert zoom.endswith(";[v]eq=saturation=1.1[v];[v]subtitles=c.ass[v]")
+    # The app's own fonts ride along when it has them (video/captions.py subtitles_filter).
+    assert re.search(r";\[v\]eq=saturation=1\.1\[v\];\[v\]subtitles=c\.ass(:fontsdir='[^']*')?\[v\]$", zoom)
 
 
 def _ffmpeg_or_skip() -> str:
@@ -433,3 +436,48 @@ def test_blurred_and_fullscreen_decide_how_the_game_is_shown():
     switch (set for another layout) doesn't turn one into the other."""
     assert _plan("blurred", cam=None, game_fit="fill").element("game").fit == "contain"
     assert _plan("fullscreen", cam=None, game_fit="fit").element("game").fit == "cover"
+
+
+# ---- the Whole layouts: the game's whole picture with the webcam ------------------------
+
+WHOLE = [k for k, v in layout.PRESETS.items() if k.startswith("whole_")]
+
+
+def test_there_are_whole_game_layouts_and_they_show_it_whole():
+    assert {"whole_cam", "whole_cam_below", "whole_circle", "whole_small_cam",
+            "whole_duo", "whole_duo_split"} <= set(WHOLE)
+    for preset in WHOLE:
+        assert layout.PRESETS[preset]["game_fit"] == "fit"
+
+
+@pytest.mark.parametrize("preset", WHOLE)
+def test_a_whole_layout_shows_the_game_unzoomed_with_its_webcams(preset):
+    cam2 = [0.75, 0.0, 0.25, 1 / 3]
+    p = _plan(preset, cam2=cam2)
+    game = p.element("game")
+    assert game.fit == "contain"                      # never cropped to fill
+    assert p.element("bg") is not None                # a blur behind, no black bars
+    assert p.element("cam") is not None
+    if "cam2" in layout._roles(layout.PRESETS[preset]):
+        assert p.element("cam2") is not None
+    # No webcam covers the game.
+    gx, gy, gw, gh = game.dest
+    for e in p.elements:
+        if e.role in ("cam", "cam2"):
+            x, y, w, h = e.dest
+            assert y + h <= gy or y >= gy + gh, (preset, e.role)
+
+
+def test_a_whole_pip_layout_puts_the_game_right_under_the_facecam():
+    p = _plan("whole_circle")
+    cam, game = p.element("cam"), p.element("game")
+    assert game.anchor == "top"
+    assert game.dest[1] == cam.dest[1] + cam.dest[3] + layout.PIP_GAP
+    # Moved down past the middle, the facecam no longer pushes the game.
+    low = _plan("whole_circle", places={"cam": [0.3, 0.7, 0.36, 0.2]})
+    assert low.element("game").dest == (0, 0, 1080, 1920) and low.element("bg") is None
+
+
+def test_without_a_second_webcam_the_duo_whole_layouts_fall_back_to_one():
+    assert _plan("whole_duo").preset == "whole_circle"
+    assert _plan("whole_duo_split").preset == "whole_cam"

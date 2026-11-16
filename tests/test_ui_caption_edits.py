@@ -167,7 +167,9 @@ def test_escape_in_the_word_box_drops_that_word_and_leaves_the_editor_open():
 
 def test_apply_leaves_the_draft_and_the_clip_list_follows_the_new_id():
     editor = _source("components/TimelineEditor.tsx")
+    # The job id goes to the editor, which follows the re-render to its end.
     assert re.search(r"await api\.rerenderClip\(clip\.id, undefined, renderOpts, usedSuggestions\(\)\)\n"
+                     r"\s*onApplyStarted\?\.\(job_id\)\n"
                      r"(\s*//.*\n)*\s*backToOriginal\(\)", editor)
     studio = _source("pages/ClipStudio.tsx")
     # Noted as the event comes, before any list is read...

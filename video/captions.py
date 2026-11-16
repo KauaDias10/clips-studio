@@ -21,13 +21,15 @@ DEFAULT_STYLE = {
     "font": "Arial",          # must be in FONTS (installed on stock Windows)
     "font_size": 84,          # at 1080x1920 playback resolution
     "color": "#FFFFFF",       # text colour (hex RGB)
-    "position": "bottom",     # bottom | middle | top
+    "position": "bottom",     # bottom | middle | top | custom (at caption_y)
+    "caption_y": 77,          # custom: the caption's bottom edge, % of frame height
     "words_per_caption": 3,
     "uppercase": True,
     "highlight": False,           # light up each word as it is spoken
     "highlight_color": "#FFE600",
     "second_speaker": False,      # another colour when it isn't the main speaker talking (#126)
     "second_speaker_color": "#5CE1FF",
+    "reveal": False,              # each word appears as it is said, not ahead of it
 }
 
 # Fonts shipped with every stock Windows install, so a burned clip renders
@@ -44,6 +46,22 @@ FONTS = [
     "Georgia",
     "Comic Sans MS",
     "Courier New",
+    "Segoe UI Black",
+    "Bahnschrift",
+    "Franklin Gothic Medium",
+    "Calibri",
+    "Candara",
+    "Corbel",
+    "Cambria",
+    "Constantia",
+    "Palatino Linotype",
+    "Times New Roman",
+    "Consolas",
+    "Lucida Console",
+    "Segoe Print",
+    "Segoe Script",
+    "Ink Free",
+    "Gabriola",
     # Script-capable Windows-stock fonts (auto-selected by language below).
     "Nirmala UI",
     "Yu Gothic UI",
@@ -69,7 +87,47 @@ SCRIPT_FONTS = {
     "ar": "Segoe UI", "fa": "Segoe UI", "ur": "Segoe UI",
 }
 
-_LATIN_ONLY = set(FONTS[:10])
+_LATIN_ONLY = set(FONTS[: FONTS.index("Nirmala UI")])
+
+# The fonts short-form captions are known for, which no Windows install has:
+# shipped with the app in assets/fonts/ttf (SIL Open Font License, licences in
+# assets/fonts) and handed to libass with the subtitles filter's fontsdir.
+# Name as libass finds it -> file.
+BUNDLED_FONTS = {
+    "Montserrat ExtraBold": "Montserrat-ExtraBold.ttf",
+    "Montserrat Black": "Montserrat-Black.ttf",
+    "Bebas Neue": "BebasNeue-Regular.ttf",
+    "Anton": "Anton-Regular.ttf",
+}
+FONTS += list(BUNDLED_FONTS)
+_LATIN_ONLY |= set(BUNDLED_FONTS)
+
+
+def fonts_dir() -> Path | None:
+    """assets/fonts/ttf, wherever this build keeps it (as video/outro.py finds
+    its clips: a frozen build puts data under _internal/)."""
+    import sys
+
+    roots: list[Path] = []
+    if getattr(sys, "frozen", False):
+        exe_dir = Path(sys.executable).parent
+        roots += [exe_dir / "assets" / "fonts" / "ttf", exe_dir / "_internal" / "assets" / "fonts" / "ttf"]
+        meipass = getattr(sys, "_MEIPASS", None)
+        if meipass:
+            roots.append(Path(meipass) / "assets" / "fonts" / "ttf")
+    roots.append(Path(__file__).resolve().parent.parent / "assets" / "fonts" / "ttf")
+    return next((r for r in roots if r.is_dir() and any(r.glob("*.ttf"))), None)
+
+
+def subtitles_filter(ass_name: str) -> str:
+    """The subtitles filter for an ASS file, with the bundled fonts on hand.
+    The path is escaped for a filter graph: forward slashes, the drive's
+    colon escaped, the whole thing quoted (it may hold spaces)."""
+    where = fonts_dir()
+    if where is None:
+        return f"subtitles={ass_name}"
+    path = where.resolve().as_posix().replace("'", "").replace(":", "\\:")
+    return f"subtitles={ass_name}:fontsdir='{path}'"
 
 
 def caption_font_for(language: str, chosen: str | None) -> str | None:
@@ -82,6 +140,15 @@ def caption_font_for(language: str, chosen: str | None) -> str | None:
 
 # position -> (ASS numpad alignment, vertical margin)
 _POSITIONS = {"bottom": (2, 440), "middle": (5, 0), "top": (8, 140)}
+
+
+def caption_y(opts: dict) -> float:
+    """A hand-placed caption's bottom edge, % of the frame height (custom
+    position), kept on screen."""
+    try:
+        return max(8.0, min(98.0, float(opts.get("caption_y", 77))))
+    except (TypeError, ValueError):
+        return 77.0
 
 
 def build_caption_lines(
@@ -459,8 +526,13 @@ def build_captions(
     lines: list[dict] | None = None,
     canvas: tuple[int, int] = (1080, 1920),
     language: str = "en",
+    word_map=None,
 ) -> Path | None:
     """Write an ASS file with times relative to the clip start.
+    `word_map`: when the clip was cut or sped up in the editor, `lines` are
+    already on the edited timeline; this takes a word's clip time there too
+    (None for a word that was cut out), so the highlight and the reveal land
+    on the word as it is heard.
     `lines` (user-corrected caption text) overrides the generated ones.
     `canvas` is the output frame (default portrait Shorts; longform passes
     1920x1080 and the style scales to it). Returns the path, or None if
@@ -478,9 +550,20 @@ def build_captions(
              "word": w["word"]}
             for w in _words_in_window(segments, candidate.start, candidate.end)
         ]
-        if opts.get("highlight")
+        if opts.get("highlight") or opts.get("reveal")
         else []
     )
+    if word_map is not None and spoken:
+        moved = []
+        for w in spoken:
+            start = word_map(w["start"])
+            if start is None:
+                continue   # cut out: never highlighted
+            end = word_map(w["end"])
+            if end is None or end < start:
+                end = start + 0.05
+            moved.append({**w, "start": start, "end": end})
+        spoken = moved
 
     # The other speaker's lines (build_caption_lines, tag_lines) in their own
     # colour. Only with the option on: a "speaker" left on a saved line by an
@@ -503,7 +586,7 @@ def build_captions(
         if end <= start:
             continue
         tint = second if second and line.get("speaker") else None
-        if opts.get("highlight"):
+        if opts.get("highlight") or opts.get("reveal"):
             dialogue.extend(_highlighted(text, start, end, spoken, opts, tint))
         else:
             dialogue.append(
@@ -512,6 +595,14 @@ def build_captions(
 
     if not dialogue:
         return None
+    until = opts.get("anchor_until")
+    if until is not None and any(opts.get(k) is not None for k in _ANCHORS):
+        # The title banner leaves the screen at `until`: captions from then on
+        # go back to their own position (the "Free" style in _header).
+        dialogue = [
+            d.replace(",Default,", ",Free,", 1) if _ass_seconds(d.split(",", 2)[1]) >= until - 0.01 else d
+            for d in dialogue
+        ]
     output_path.write_text(_header(opts, canvas) + "\n".join(dialogue) + "\n", encoding="utf-8")
     return output_path
 
@@ -554,12 +645,18 @@ def _highlighted(
     in the highlight colour. `tint` is the caption's own colour when it is
     not the style's (the other speaker's line).
 
+    With "reveal", the words not yet said are left out: each one appears as
+    it is spoken and the line grows from the centre. (Keeping the unsaid
+    words as invisible placeholders held the line still, but showed the
+    first words off to one side, which read as a misplaced caption.)
+
     ASS karaoke (\\k) fills progressively and leaves every passed word
     coloured, which is the sing-along look. Short-form captions highlight
     exactly ONE word at a time, so each state is its own event.
     """
     tokens = text.split()
     times = _word_times(text, start, end, spoken)
+    highlight, reveal = bool(opts.get("highlight")), bool(opts.get("reveal"))
     if len(tokens) < 2 or not times:
         return [f"Dialogue: 0,{_ass_time(start)},{_ass_time(end)},Default,,0,0,0,,{_tinted(text, tint)}"]
 
@@ -573,10 +670,11 @@ def _highlighted(
         seg_end = end if i == len(times) - 1 else max(seg_start, min(end, times[i + 1][0]))
         if seg_end <= seg_start:
             continue
-        body = " ".join(
-            (f"{{\\1c{hot}}}{tok}{{\\1c{base}}}" if j == i else tok)
-            for j, tok in enumerate(tokens)
-        )
+        said = [
+            (f"{{\\1c{hot}}}{tok}{{\\1c{base}}}" if j == i and highlight else tok)
+            for j, tok in enumerate(tokens[: i + 1] if reveal else tokens)
+        ]
+        body = " ".join(said)
         events.append(
             f"Dialogue: 0,{_ass_time(seg_start)},{_ass_time(seg_end)},Default,,0,0,0,,"
             f"{{\\1c{base}}}{body}"
@@ -584,7 +682,31 @@ def _highlighted(
     return events
 
 
+_ANCHORS = ("anchor_y", "anchor_top_y")
+
+
 def _header(opts: dict, canvas: tuple[int, int] = (1080, 1920)) -> str:
+    styles = _style_line("Default", opts, canvas)
+    if opts.get("anchor_until") is not None and any(opts.get(k) is not None for k in _ANCHORS):
+        # Captions after the title banner has gone: where their own position puts them.
+        free = {k: v for k, v in opts.items() if k not in _ANCHORS}
+        styles += "\n" + _style_line("Free", free, canvas)
+    return f"""[Script Info]
+ScriptType: v4.00+
+PlayResX: {canvas[0]}
+PlayResY: {canvas[1]}
+WrapStyle: 0
+
+[V4+ Styles]
+Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
+{styles}
+
+[Events]
+Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
+"""
+
+
+def _style_line(name: str, opts: dict, canvas: tuple[int, int]) -> str:
     alignment, margin_v = _POSITIONS.get(opts["position"], _POSITIONS["bottom"])
     color = _ass_color(opts["color"])
     size = max(40, min(140, int(opts["font_size"])))
@@ -594,19 +716,27 @@ def _header(opts: dict, canvas: tuple[int, int] = (1080, 1920)) -> str:
     scale = canvas[1] / 1920
     size = max(24, round(size * scale))
     margin_v = round(margin_v * scale)
-    return f"""[Script Info]
-ScriptType: v4.00+
-PlayResX: {canvas[0]}
-PlayResY: {canvas[1]}
-WrapStyle: 0
-
-[V4+ Styles]
-Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
-Style: Default,{font},{size},{color},{color},&H00000000,&H7F000000,-1,0,0,0,100,100,0,0,1,7,2,{alignment},60,60,{margin_v},1
-
-[Events]
-Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
-"""
+    # Placed by hand (dragged in the editor): `caption_y` is where the bottom
+    # of the caption sits, % of the frame height. Bottom-anchored, so a line
+    # that wraps grows upwards from the spot that was chosen.
+    placed = opts.get("position") == "custom"
+    if placed:
+        alignment = 2
+        margin_v = round(canvas[1] * (1 - caption_y(opts) / 100))
+    # With the title banner (video_editor/title_banner.py) captions sit right
+    # on top of the box (Top and hand-placed ones stay where they are):
+    # bottom-anchored, their baseline at `anchor_y` (canvas pixels).
+    elif opts.get("position") != "top" and opts.get("anchor_y") is not None:
+        alignment = 2
+        margin_v = max(0, canvas[1] - int(opts["anchor_y"]))
+    # ...or right below it, when the banner is near the top: top-anchored.
+    elif opts.get("position") != "top" and opts.get("anchor_top_y") is not None:
+        alignment = 8
+        margin_v = max(0, int(opts["anchor_top_y"]))
+    return (
+        f"Style: {name},{font},{size},{color},{color},&H00000000,&H7F000000,"
+        f"-1,0,0,0,100,100,0,0,1,7,2,{alignment},60,60,{margin_v},1"
+    )
 
 
 def _ass_color(hex_rgb: str) -> str:
@@ -660,3 +790,9 @@ def _ass_time(seconds: float) -> str:
     m = int(seconds % 3600 // 60)
     s = seconds % 60
     return f"{h}:{m:02d}:{s:05.2f}"
+
+
+def _ass_seconds(stamp: str) -> float:
+    """H:MM:SS.cc -> seconds (the inverse of _ass_time)."""
+    h, m, s = stamp.strip().split(":")
+    return int(h) * 3600 + int(m) * 60 + float(s)

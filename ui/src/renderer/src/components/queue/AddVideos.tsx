@@ -620,16 +620,23 @@ export default function AddVideos({ onAdded }: { onAdded?: () => void }): JSX.El
   })
   const setSlotStyle =
     (slot: Slot) =>
-    <K extends keyof CaptionStyle>(k: K, v: CaptionStyle[K]): void => {
-      // Remembered for the next video, which starts from it (#138).
-      const style = { ...slotStyle(slot), [k]: v }
-      try {
-        localStorage.setItem(PREF.caption_style, JSON.stringify(style))
-      } catch {
-        // Not remembered for next time; this video still gets it.
-      }
-      patchOptions(slot.key, { caption_style: style })
-    }
+    <K extends keyof CaptionStyle>(k: K, v: CaptionStyle[K]): void =>
+      // From the slot as it is NOW, not as this render saw it: dragging the
+      // title banner changes two fields in one event, and the second must not
+      // undo the first.
+      setSlots((prev) =>
+        prev.map((s) => {
+          if (s.key !== slot.key) return s
+          const style = { ...slotStyle(s), [k]: v }
+          // Remembered for the next video, which starts from it (#138).
+          try {
+            localStorage.setItem(PREF.caption_style, JSON.stringify(style))
+          } catch {
+            // Not remembered for next time; this video still gets it.
+          }
+          return { ...s, options: { ...s.options, caption_style: style }, error: undefined }
+        })
+      )
 
   /** REPLACE this video's options wholesale.
    *

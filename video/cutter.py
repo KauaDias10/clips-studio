@@ -17,6 +17,9 @@ from video.encoding import (
     using_hardware_encoder,
     video_encoder_args,
 )
+from video.captions import subtitles_filter
+
+STAGING_CPU_ARGS = ["-c:v", "libx264", "-preset", "ultrafast", "-crf", "18"]
 
 
 def cut_clip(
@@ -27,6 +30,7 @@ def cut_clip(
     vf_extra: str = "",
     normalize: bool = False,
     final: bool = False,
+    staging: bool = False,
 ) -> Path:
     """normalize: loudness-normalise the audio. Only for a FINAL clip — this
     also cuts the staging file the tracked path crops from, and normalising
@@ -48,16 +52,20 @@ def cut_clip(
         # Force CONSTANT frame rate. Twitch/Kick VODs are often variable frame
         # rate; the tracked crop rewrites video at a constant fps in OpenCV, so
         # without this the video duration drifts from the audio -> A/V desync.
-        "-vsync", "cfr",
+        "-fps_mode", "cfr",
         *audio_filter_args(normalize),     # sync, and loudness for a final clip
-        *video_encoder_args(),  # NVENC when available, libx264 otherwise
+        # NVENC when available, libx264 otherwise. A staging cut only this
+        # app reads (the tracked render crops from it and encodes again) on
+        # the CPU takes the fastest preset at a higher quality: about twice
+        # as fast, and nothing anyone watches is encoded with it.
+        *(STAGING_CPU_ARGS if staging and video_encoder_args() == CPU_ARGS else video_encoder_args()),
         "-c:a", "aac", "-b:a", "128k",
         *(final_movflags() if final else ["-movflags", "+faststart"]),
     ]
     vf_parts = [p for p in (vf_extra,) if p]
     if ass_path is not None:
         # Bare filename + cwd avoids Windows path escaping in filter args.
-        vf_parts.append(f"subtitles={ass_path.name}")
+        vf_parts.append(subtitles_filter(ass_path.name))
     if vf_parts:
         cmd.extend(["-vf", ",".join(vf_parts)])
     cmd.append(str(output_path.resolve()))

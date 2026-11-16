@@ -92,6 +92,11 @@ def _request(method: str, path: str, body: dict | None = None, timeout: float = 
 CAPTION_FONTS = [
     "Arial", "Arial Black", "Impact", "Verdana", "Tahoma",
     "Trebuchet MS", "Segoe UI", "Georgia", "Comic Sans MS", "Courier New",
+    "Segoe UI Black", "Bahnschrift", "Franklin Gothic Medium", "Calibri", "Candara", "Corbel",
+    "Cambria", "Constantia", "Palatino Linotype", "Times New Roman", "Consolas", "Lucida Console",
+    "Segoe Print", "Segoe Script", "Ink Free", "Gabriola",
+    # Shipped with the app (assets/fonts), BUNDLED_FONTS in video/captions.py.
+    "Montserrat ExtraBold", "Montserrat Black", "Bebas Neue", "Anton",
 ]
 
 CAPTION_POSITIONS = ("bottom", "middle", "top")

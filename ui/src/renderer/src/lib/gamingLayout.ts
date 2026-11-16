@@ -19,6 +19,9 @@ const PIP_MARGIN = 0.02
  *  showed the border. The frame editor's game box stops at the same line. */
 export const CAM_CLEAR = 0.01
 export const MIN_PLACE = 0.12
+// A whole game goes under the facecam(s) when they end above this much of the
+// canvas height (gaming/layout.py PIP_WHOLE_MAX).
+const PIP_WHOLE_MAX = 0.5
 /** Layers moved and resized on the Short itself. */
 export type Placeable = 'cam' | 'cam2' | 'ui'
 
@@ -345,7 +348,7 @@ export function resolve(settings: LayoutSettings): LayoutSettings & { preset: st
   const roles = rolesOfSpec(spec)
   if (roles.has('cam') && !s.cam) preset = 'blurred'
   else if (roles.has('ui') && !s.ui_box) preset = 'split'
-  else if (roles.has('cam2') && !s.cam2) preset = ({ dual_cam: 'small_cam', duo_split: 'split' } as Record<string, string>)[preset] ?? preset
+  else if (roles.has('cam2') && !s.cam2) preset = ({ dual_cam: 'small_cam', duo_split: 'split', whole_duo: 'whole_circle', whole_duo_split: 'whole_cam' } as Record<string, string>)[preset] ?? preset
   return { ...s, preset }
 }
 
@@ -460,7 +463,7 @@ export function plan(
   if (spec.type === 'full') {
     game([0, 0, OUT_W, OUT_H], 'center')
   } else if (spec.type === 'pip') {
-    game([0, 0, OUT_W, OUT_H], 'center')
+    const pips: [string, PxBox][] = []
     let size: [number, number] | null = null
     for (const [role, region] of pipRegions(spec, safe)) {
       let dest = region
@@ -470,8 +473,18 @@ export function plan(
       else if (dest[2] !== size[0] || dest[3] !== size[1])
         // Two webcams are always the same size: the first one's.
         dest = [Math.min(dest[0], OUT_W - size[0]), Math.min(dest[1], OUT_H - size[1]), size[0], size[1]]
-      camera(role as Role, dest, (spec.shape ?? 'rect') as Element['shape'])
+      pips.push([role, dest])
     }
+    const below = pips.length ? Math.max(...pips.map(([, d]) => d[1] + d[3])) : OUT_H
+    if (fit === 'fit' && below < OUT_H * PIP_WHOLE_MAX) {
+      // The whole game right under the webcam, on a blur of itself.
+      const top = pos(below + PIP_GAP)
+      const region: PxBox = [0, top, OUT_W, OUT_H - top]
+      const whole = gameSrc(srcW, srcH, s, region[2] / region[3], fit, shownCams, panels)
+      elements.push({ role: 'bg', src: whole, dest: [0, 0, OUT_W, OUT_H], fit: 'blur', anchor: 'center', shift: 0, shape: 'rect' })
+      game(region, 'top', whole)
+    } else game([0, 0, OUT_W, OUT_H], 'center')
+    for (const [role, dest] of pips) camera(role as Role, dest, (spec.shape ?? 'rect') as Element['shape'])
   } else {
     let regions = stackRegions(spec, order, s.divider)
     let wholeGame: PxBox | null = null

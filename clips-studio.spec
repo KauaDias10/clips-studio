@@ -186,6 +186,9 @@ datas += [
     # and video/mascot_art.py is imported rather than scripts/, which is not
     # packaged at all.
     (str(ROOT / "assets" / "outro"), "assets/outro"),
+    # Caption/title fonts no Windows install has (Montserrat, Bebas Neue,
+    # Anton; SIL OFL), given to libass as the subtitles filter's fontsdir.
+    (str(ROOT / "assets" / "fonts"), "assets/fonts"),
     # Gaming / Reaction's layouts and platform safe zones, read beside
     # gaming/framing.py at runtime (the editor has its own checked copy).
     (str(ROOT / "gaming" / "layouts.json"), "gaming"),

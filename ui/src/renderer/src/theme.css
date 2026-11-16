@@ -1,5 +1,29 @@
 @import 'tailwindcss';
 
+/* Caption / title fonts the app ships (assets/fonts, SIL OFL), so the caption
+   style example shows them as the burn will. Names match video/captions.py
+   BUNDLED_FONTS. */
+@font-face {
+  font-family: 'Montserrat ExtraBold';
+  src: url('./assets/fonts/Montserrat-ExtraBold.ttf') format('truetype');
+  font-display: swap;
+}
+@font-face {
+  font-family: 'Montserrat Black';
+  src: url('./assets/fonts/Montserrat-Black.ttf') format('truetype');
+  font-display: swap;
+}
+@font-face {
+  font-family: 'Bebas Neue';
+  src: url('./assets/fonts/BebasNeue-Regular.ttf') format('truetype');
+  font-display: swap;
+}
+@font-face {
+  font-family: 'Anton';
+  src: url('./assets/fonts/Anton-Regular.ttf') format('truetype');
+  font-display: swap;
+}
+
 /* Navy + sky design tokens (see DESIGN-V2.md, "Visual theme") */
 @theme {
   --color-base: #0a1628;

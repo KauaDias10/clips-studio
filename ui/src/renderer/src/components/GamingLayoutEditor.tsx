@@ -67,7 +67,13 @@ const CARD_ORDER = [
   'game_ui',
   'mosaic',
   'dual_cam',
-  'duo_split'
+  'duo_split',
+  'whole_cam',
+  'whole_cam_below',
+  'whole_circle',
+  'whole_small_cam',
+  'whole_duo',
+  'whole_duo_split'
 ] as const
 const FRAMES = [0.1, 0.3, 0.5, 0.7, 0.9]
 const COLOUR: Record<BoxRole, string> = { cam: '#38BDF8', cam2: '#A78BFA', game: '#22C55E', ui: '#F59E0B' }
@@ -624,6 +630,9 @@ export default function GamingLayoutEditor({
     // Each layout starts from its own order (Basecam: the game on top); the
     // On top switch then changes it.
     setOrder(((PRESETS[id].order as string) ?? 'cam_top') as 'cam_top' | 'game_top')
+    // ...and its own game: the Whole layouts show the whole picture, the
+    // others zoom to fill. The Whole / Zoom switch then changes it.
+    if (PRESETS[id].type !== 'full') setGameFit(((PRESETS[id].game_fit as string) ?? 'fill') as 'fit' | 'fill')
     setDivider(undefined)
     const r = rolesOf(id)
     if (r.has('ui') && !boxes.ui) setBox('ui', NEW_BOX.ui)

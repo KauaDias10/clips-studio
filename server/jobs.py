@@ -881,6 +881,10 @@ class Worker(threading.Thread):
             raise ValueError("A reel is joined from the match's clips, so it can't be re-rendered: "
                              "change the clips, then process the video again for a new reel.")
 
+        # The title banner shows the clip's title as it is now (renamed or not).
+        if clip["title"]:
+            render_opts["title_text"] = clip["title"]
+
         vrow = db.conn.execute(
             "SELECT title, channel_name FROM videos WHERE video_id = ?", (video_id,)
         ).fetchone()

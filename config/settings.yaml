@@ -2,7 +2,7 @@
 #   QUICK SETUP — edit these lines, ignore everything below
 # ==============================================================
 
-model: gemma:7b        # your AI model (see: python main.py models)
+model: gemma3:4b       # your AI model (see: python main.py models)
 channel: ""            # your channel, e.g. "@YourHandle"
 
 content_language: auto # language of the streams you clip: auto = detect per
@@ -46,9 +46,9 @@ llm:
   ollama_host: http://localhost:11434
 
 whisper:
-  model: auto           # auto = large-v3-turbo on GPU, small on CPU. Or force:
+  model: small          # auto = large-v3-turbo on GPU, small on CPU. Or force:
                         # tiny / base / small / medium / large-v3 / large-v3-turbo
-  device: auto          # cuda if available, else cpu
+  device: cpu           # cuda if available, else cpu
 
 # Where transcription runs. "local" is Whisper on this PC (the settings above),
 # the default. Or send the audio, on YOUR OWN API key, to a provider that
@@ -68,7 +68,7 @@ clips:
                         # (turn on the 60s+ toggle for TikTok-length clips)
   vertical: true        # true 9:16 1080x1920 with YOLOv8 subject tracking
   captions: true        # burn word-synced captions into the clips
-  outro: true           # append the 2.9s Clips Kitty end card to each clip.
+  outro: false          # append the 2.9s Clips Kitty end card to each clip.
                         # Stream-copied, so the clip is never re-encoded.
                         # Absent counts as true, so upgrading turns it on.
 
@@ -118,7 +118,7 @@ video:
   encoder: auto          # auto = first working GPU encoder (NVIDIA nvenc /
                          # AMD amf / Intel qsv), else CPU. Or force one:
                          # "nvenc" / "amf" / "qsv" / "cpu"
-  parallel_renders: 3    # clips rendered at once (one's GPU tracking overlaps
+  parallel_renders: 1    # clips rendered at once (one's GPU tracking overlaps
                          # another's NVENC encode). Sized for ~6 CPU cores /
                          # 16GB RAM; raise only with more RAM + spare VRAM.
 

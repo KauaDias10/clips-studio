@@ -685,6 +685,10 @@ def _quiet_connection_resets(loop, context: dict) -> None:
     loop.default_exception_handler(context)
 
 
+# One lock per clip being preview-rendered (preview_clip).
+_preview_locks: dict[int, threading.Lock] = {}
+
+
 def create_app(config: dict, settings_path: Path) -> FastAPI:
     from server import feedback as feedback_mod
 
@@ -1951,6 +1955,8 @@ def create_app(config: dict, settings_path: Path) -> FastAPI:
             opts["speaker_edits"] = body.speaker_edits
         if body.captions is not None:
             opts["captions"] = body.captions
+        if "title" in row.keys() and row["title"]:
+            opts["title_text"] = row["title"]   # the title banner shows the current title
 
         candidate = ClipCandidate(
             start=row["start_s"], end=row["end_s"],
@@ -1964,12 +1970,25 @@ def create_app(config: dict, settings_path: Path) -> FastAPI:
         if not named.startswith(os.path.join(os.path.normpath(prev_dir), "")):
             raise HTTPException(400, "not a clip")
         out = Path(named)
+        # One preview of a clip at a time. A second click while one renders
+        # used to start a second full render of the same clip into the same
+        # scratch files, and whichever finished last won.
+        lock = _preview_locks.setdefault(int(clip_id), threading.Lock())
+        if not lock.acquire(blocking=False):
+            raise HTTPException(409, "A preview of this clip is already rendering.")
         try:
             from transcription.transcriber import detected_language
 
             content_lang = detected_language(row["video_id"], data_dir / "transcripts")
+            # Its own scratch folder: scratch files are named by the clip's
+            # window (clip_00105-00124.*), and two clips of different videos
+            # at the same times shared them in previews/.
+            work = prev_dir / f"work_{int(clip_id)}"
+            # No end card on a draft: it is joined on at the end, the preview
+            # is about the edits, and the concat was time spent waiting.
+            draft_config = {**config, "clips": {**config["clips"], "outro": False}}
             rendered, _ = _render_files(
-                source, candidate, segments, prev_dir, config, opts, content_lang
+                source, candidate, segments, work, draft_config, opts, content_lang
             )
             # The last preview may still be playing in the editor: Windows
             # refuses deleting or renaming over it (#137), so put the new one
@@ -1984,6 +2003,8 @@ def create_app(config: dict, settings_path: Path) -> FastAPI:
             discard(rendered)
         except Exception as e:
             raise HTTPException(500, f"preview render failed: {str(e)[:400]}")
+        finally:
+            lock.release()
         import time as _time
 
         return {"url": f"/media/preview/{clip_id}?v={int(_time.time())}"}

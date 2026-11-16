@@ -107,7 +107,7 @@ export default function CaptionEditor({
             Burn captions into this clip
           </label>
 
-          <CaptionStyleControls idPrefix={`clip-${clip.id}`} style={style} onChange={setStyleField} />
+          <CaptionStyleControls idPrefix={`clip-${clip.id}`} style={style} onChange={setStyleField} showTitleText />
 
           <div>
             <p className="label mb-1">Caption text (fix any transcription mistakes)</p>

@@ -140,6 +140,20 @@ function WatermarkOverlay({
 /** Input types that are controls, not somewhere text is typed. */
 const NOT_TYPING = new Set(['range', 'checkbox', 'radio', 'color', 'button', 'submit', 'reset', 'file'])
 
+/** An Apply being re-rendered, as the editor shows it. */
+export interface ApplyState {
+  jobId: number
+  phase: 'queued' | 'running' | 'done' | 'failed'
+  started: number
+  ended?: number
+  error?: string
+}
+
+function elapsed(from: number, to?: number): string {
+  const s = Math.max(0, Math.round(((to ?? Date.now()) - from) / 1000))
+  return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`
+}
+
 /** Full-page editing workspace. */
 export default function EditorView({
   clip,
@@ -157,6 +171,48 @@ export default function EditorView({
   const isLandscape = !!clip.render_opts?.profile
 
   const [translated, setTranslated] = useState<TranslationPreview | null>(null)
+
+  // Apply's re-render, followed until it is done. Kept here, not in the
+  // TimelineEditor: the clip comes back under a new id when it finishes, and
+  // the timeline starts afresh on it — the outcome must outlive that.
+  const [applying, setApplying] = useState<ApplyState | null>(null)
+  useEffect(() => {
+    if (!applying || applying.phase === 'done' || applying.phase === 'failed') return
+    let alive = true
+    const id = setInterval(async () => {
+      try {
+        const job = await api.job(applying.jobId)
+        if (!alive) return
+        if (job.status === 'done') {
+          setApplying((a) => (a ? { ...a, phase: 'done', ended: Date.now() } : a))
+          onChanged() // the new file and row: the editor moves onto them
+        } else if (job.status === 'failed' || job.status === 'cancelled') {
+          setApplying((a) => (a ? { ...a, phase: 'failed', error: job.error || job.status } : a))
+        } else {
+          setApplying((a) => (a ? { ...a, phase: job.status === 'running' ? 'running' : 'queued' } : a))
+        }
+      } catch {
+        // A missed poll is not a verdict; the next one asks again.
+      }
+    }, 1200)
+    return () => {
+      alive = false
+      clearInterval(id)
+    }
+  }, [applying?.jobId, applying?.phase])
+  // The ticking clock on the banner.
+  const [, setTick] = useState(0)
+  useEffect(() => {
+    if (!applying || applying.phase === 'done' || applying.phase === 'failed') return
+    const id = setInterval(() => setTick((n) => n + 1), 1000)
+    return () => clearInterval(id)
+  }, [applying?.phase])
+  // A success note goes away on its own.
+  useEffect(() => {
+    if (applying?.phase !== 'done') return
+    const id = setTimeout(() => setApplying(null), 6000)
+    return () => clearTimeout(id)
+  }, [applying?.phase])
 
   useEffect(() => {
     setPreviewSrc(null)
@@ -281,10 +337,39 @@ export default function EditorView({
                 {translated.language.toUpperCase()} preview — this is how the burn will look
               </span>
             )}
-            {previewSrc && (
+            {previewSrc && !applying && (
               <span className="absolute top-2 left-2 z-20 bg-accent/90 text-black text-[10px] font-bold px-2 py-0.5 rounded">
                 PREVIEW — all edits applied (not saved until Apply)
               </span>
+            )}
+            {applying && (
+              <div
+                role="status"
+                className={`absolute inset-x-2 top-2 z-30 rounded-lg px-3 py-2 text-xs font-medium shadow-lg flex items-center gap-2 ${
+                  applying.phase === 'done'
+                    ? 'bg-emerald-500/95 text-black'
+                    : applying.phase === 'failed'
+                      ? 'bg-red-500/95 text-white'
+                      : 'bg-black/80 text-white'
+                }`}
+              >
+                {(applying.phase === 'queued' || applying.phase === 'running') && (
+                  <span className="size-3 rounded-full border-2 border-white/40 border-t-white animate-spin shrink-0" />
+                )}
+                <span className="flex-1">
+                  {applying.phase === 'queued' &&
+                    `${t('Edits saved — waiting for the video being processed to finish')} (${elapsed(applying.started)})`}
+                  {applying.phase === 'running' && `${t('Applying your edits…')} (${elapsed(applying.started)})`}
+                  {applying.phase === 'done' &&
+                    `✓ ${t('Edits applied — this is the new clip')} (${elapsed(applying.started, applying.ended)})`}
+                  {applying.phase === 'failed' && `${t('Applying failed')}: ${applying.error ?? ''}`}
+                </span>
+                {(applying.phase === 'done' || applying.phase === 'failed') && (
+                  <button type="button" className="opacity-80 hover:opacity-100" onClick={() => setApplying(null)}>
+                    ✕
+                  </button>
+                )}
+              </div>
             )}
           </div>
           {isLandscape && (
@@ -296,6 +381,8 @@ export default function EditorView({
             clip={clip}
             videoRef={videoRef}
             onChanged={onChanged}
+            applying={applying !== null && (applying.phase === 'queued' || applying.phase === 'running')}
+            onApplyStarted={(jobId) => setApplying({ jobId, phase: 'queued', started: Date.now() })}
             onPreview={setPreviewSrc}
             onLiveOverlay={setLiveOverlay}
             onTranslationPreview={setTranslated}

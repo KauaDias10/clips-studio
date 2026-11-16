@@ -50,6 +50,30 @@
     "duo_split": {
       "label": "Duo split", "type": "stack", "rows": [["cam", "cam2"], ["game"]],
       "divider": [0.25, 0.45, 0.33], "order": "cam_top", "game_fit": "fill"
+    },
+    "whole_cam": {
+      "label": "Whole + cam", "type": "stack", "rows": [["cam"], ["game"]],
+      "divider": [0.2, 0.45, 0.3], "order": "cam_top", "game_fit": "fit"
+    },
+    "whole_cam_below": {
+      "label": "Whole, cam below", "type": "stack", "rows": [["cam"], ["game"]],
+      "divider": [0.2, 0.45, 0.3], "order": "game_top", "game_fit": "fit"
+    },
+    "whole_circle": {
+      "label": "Whole + circle", "type": "pip", "cams": ["cam"],
+      "pip_width": 0.36, "pip_aspect": 1.0, "shape": "circle", "game_fit": "fit"
+    },
+    "whole_small_cam": {
+      "label": "Whole + small cam", "type": "pip", "cams": ["cam"],
+      "pip_width": 0.5, "pip_aspect": 1.6, "shape": "rect", "game_fit": "fit"
+    },
+    "whole_duo": {
+      "label": "Whole + 2 circles", "type": "pip", "cams": ["cam", "cam2"],
+      "pip_width": 0.34, "pip_aspect": 1.0, "shape": "circle", "game_fit": "fit"
+    },
+    "whole_duo_split": {
+      "label": "Whole + 2 cams", "type": "stack", "rows": [["cam", "cam2"], ["game"]],
+      "divider": [0.2, 0.4, 0.28], "order": "cam_top", "game_fit": "fit"
     }
   }
 }

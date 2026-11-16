@@ -48,6 +48,9 @@ PIP_MARGIN = 0.02          # of the canvas height, below the safe zone's top
 CAM_CLEAR = 0.01
 PLACEABLE = ("cam", "cam2", "ui")     # layers moved and resized on the Short itself
 MIN_PLACE = 0.12           # a placed layer is at least this much of the canvas width
+# A whole game goes under the facecam(s) when they end above this much of the
+# canvas height; a facecam moved lower leaves the game centred under it.
+PIP_WHOLE_MAX = 0.5
 
 
 @dataclass(frozen=True)
@@ -271,7 +274,8 @@ def resolve(settings: dict) -> dict:
     elif "ui" in roles and not s.get("ui_box"):
         preset = "split"
     elif "cam2" in roles and not s.get("cam2"):
-        preset = {"dual_cam": "small_cam", "duo_split": "split"}.get(preset, preset)
+        preset = {"dual_cam": "small_cam", "duo_split": "split",
+                  "whole_duo": "whole_circle", "whole_duo_split": "whole_cam"}.get(preset, preset)
     s["preset"] = preset
     return s
 
@@ -409,7 +413,7 @@ def plan(src_w: int, src_h: int, settings: dict, heads: dict | None = None) -> P
     if spec["type"] == "full":
         game((0, 0, OUT_W, OUT_H), "center")
     elif spec["type"] == "pip":
-        game((0, 0, OUT_W, OUT_H), "center")
+        pips = []
         size = None
         for role, dest in _pip_regions(spec, safe):
             if places.get(role):
@@ -419,6 +423,20 @@ def plan(src_w: int, src_h: int, settings: dict, heads: dict | None = None) -> P
             elif dest[2:] != size:
                 # Two webcams are always the same size: the first one's.
                 dest = (min(dest[0], OUT_W - size[0]), min(dest[1], OUT_H - size[1]), *size)
+            pips.append((role, dest))
+        below = max(d[1] + d[3] for _r, d in pips) if pips else OUT_H
+        if fit == "fit" and below < OUT_H * PIP_WHOLE_MAX:
+            # The whole game right under the webcam, on a blur of itself, so
+            # the webcam never covers any of it and the captions have the
+            # space below. (Centred, a whole game ran under the webcam.)
+            top = _pos(below + PIP_GAP)
+            region = (0, top, OUT_W, OUT_H - top)
+            whole = _game_src(src_w, src_h, s, region[2] / region[3], fit, shown_cams, panels)
+            elements.append(Element("bg", whole, (0, 0, OUT_W, OUT_H), "blur"))
+            game(region, "top", whole)
+        else:
+            game((0, 0, OUT_W, OUT_H), "center")
+        for role, dest in pips:
             camera(role, dest, spec.get("shape", "rect"))
     else:
         regions = _stack_regions(spec, order, s.get("divider"))

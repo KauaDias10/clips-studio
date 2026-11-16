@@ -225,6 +225,8 @@ export default function TimelineEditor({
   clip,
   videoRef,
   onChanged,
+  applying = false,
+  onApplyStarted,
   onPreview,
   onLiveOverlay,
   onTranslationPreview,
@@ -235,6 +237,10 @@ export default function TimelineEditor({
   clip: Clip
   videoRef: React.RefObject<HTMLVideoElement>
   onChanged: () => void
+  /** Apply's re-render is under way (EditorModal follows it). */
+  applying?: boolean
+  /** Apply queued its re-render as this job. */
+  onApplyStarted?: (jobId: number) => void
   onPreview: (url: string | null) => void
   onLiveOverlay: (o: LiveOverlay | null) => void
   /** Subtitles tab: draw a translated language over the editor video. */
@@ -347,6 +353,16 @@ export default function TimelineEditor({
   // Draft preview: when set, the video element shows a low-res render with
   // ALL edits baked in — live simulation must be off (it would double-apply).
   const [draftEditJson, setDraftEditJson] = useState<string | null>(null)
+  // Update preview's running clock: a real render takes a while, and a
+  // button that just says "Rendering…" reads as stuck.
+  const [previewStarted, setPreviewStarted] = useState<number | null>(null)
+  const [previewSecs, setPreviewSecs] = useState(0)
+  useEffect(() => {
+    if (previewStarted === null) return
+    setPreviewSecs(0)
+    const id = setInterval(() => setPreviewSecs(Math.round((Date.now() - previewStarted) / 1000)), 1000)
+    return () => clearInterval(id)
+  }, [previewStarted])
   const barRef = useRef<HTMLDivElement>(null)
   const dragging = useRef<'start' | 'end' | null>(null)
   // Timeline zoom: the bar grows to zoom × the container width inside a
@@ -423,6 +439,21 @@ export default function TimelineEditor({
     }
     let raf = 0
     let lastShown = -1
+    // The player's volume slider and mute button belong to the person
+    // watching. The loop used to set el.volume to the edit's volume (100%)
+    // and el.muted every frame, so the slider snapped straight back to max.
+    // Now what the loop writes is remembered, and any other change is the
+    // viewer's: the edit's volume and mutes are applied on top of theirs.
+    const own = { volume: el.volume, muted: el.muted }
+    const wrote = { volume: -1, muted: el.muted }
+    const onVolume = (): void => {
+      if (Math.abs(el.volume - wrote.volume) > 0.005) {
+        const factor = Math.max(0, Math.min(1, editRef.current.volume))
+        own.volume = factor > 0.01 ? Math.min(1, el.volume / factor) : el.volume
+      }
+      if (el.muted !== wrote.muted) own.muted = el.muted
+    }
+    el.addEventListener('volumechange', onVolume)
     const tick = (): void => {
       raf = requestAnimationFrame(tick)
       const e = editRef.current
@@ -445,15 +476,25 @@ export default function TimelineEditor({
       const inNewMute =
         e.mutes.some(([a, b]) => tOrig >= a - 0.02 && tOrig <= b + 0.02) &&
         !(baked?.mutes ?? []).some(([a, b]) => tOrig >= a && tOrig <= b)
-      el.muted = e.mute_all || inNewMute
-      if (!el.muted) el.volume = Math.max(0, Math.min(1, e.volume))
+      const muted = own.muted || e.mute_all || inNewMute
+      const volume = Math.max(0, Math.min(1, own.volume * Math.max(0, Math.min(1, e.volume))))
+      if (el.muted !== muted) {
+        wrote.muted = muted
+        el.muted = muted
+      }
+      if (!muted && Math.abs(el.volume - volume) > 0.005) {
+        wrote.volume = volume
+        el.volume = volume
+      }
       el.playbackRate = Math.max(0.25, (e.speed ?? 1) / (baked?.speed ?? 1))
     }
     raf = requestAnimationFrame(tick)
     return () => {
       cancelAnimationFrame(raf)
-      el.muted = false
-      el.volume = 1
+      el.removeEventListener('volumechange', onVolume)
+      // Hand the player back as the viewer had it.
+      el.muted = own.muted
+      el.volume = own.volume
       el.playbackRate = 1
     }
   }, [baked, duration, videoRef, draftActive])
@@ -931,7 +972,17 @@ export default function TimelineEditor({
         }
         captions = { lines: applyTextEdits(base, wordEdits, edit.muted_words), style: captionStyle }
       }
-      if (hookPending || captions) {
+      // The title banner, when its style changed: drawn live over the video.
+      const bannerPending =
+        styleDirty && (captionStyle.title_banner || storedStyle.title_banner)
+          ? {
+              style: captionStyle,
+              title: clip.title || clip.hook || '',
+              show: captionStyle.title_banner,
+              burned: storedStyle.title_banner ? storedStyle : null
+            }
+          : null
+      if (hookPending || captions || bannerPending) {
         // Old text already burned into the preview file — the overlay blurs
         // it out underneath the pending text so it doesn't ghost through.
         const captionsBurned =
@@ -945,7 +996,17 @@ export default function TimelineEditor({
             captions && captionsBurned && captionBase
               ? { lines: captionBase, style: storedStyle }
               : null,
-          burnedHook: hookPending && baked?.hook?.text ? { seconds: baked.hook.seconds } : null
+          burnedHook: hookPending && baked?.hook?.text ? { seconds: baked.hook.seconds } : null,
+          banner: bannerPending,
+          moveBanner: (x: number, y: number) =>
+            setCaptionStyle((s) =>
+              s.title_banner_x === x && s.title_banner_y === y ? s : { ...s, title_banner_x: x, title_banner_y: y }
+            ),
+          // Drag the caption on the video to place it (Free position).
+          moveCaption: (y: number) =>
+            setCaptionStyle((s) =>
+              s.position === 'custom' && s.caption_y === y ? s : { ...s, position: 'custom', caption_y: y }
+            )
         }
       }
     }
@@ -960,7 +1021,9 @@ export default function TimelineEditor({
 
   const updatePreview = async (): Promise<void> => {
     setBusy(true)
-    setNotice('Rendering preview (real render — same framing as the export, up to a minute)…')
+    const started = Date.now()
+    setPreviewStarted(started)
+    setNotice('')
     try {
       const res = await api.previewClip(
         clip.id,
@@ -975,11 +1038,14 @@ export default function TimelineEditor({
       )
       setDraftEditJson(pendingJson())
       onPreview(res.url)
-      setNotice('Preview loaded — this is exactly how the export will look')
+      setNotice(
+        `${t('Preview ready')} (${Math.round((Date.now() - started) / 1000)}s) — ${t('this is exactly how the export will look')}`
+      )
     } catch (e) {
       setNotice(String(e))
     } finally {
       setBusy(false)
+      setPreviewStarted(null)
     }
   }
 
@@ -1203,7 +1269,8 @@ export default function TimelineEditor({
           remembered = ` (Couldn’t remember the split for this creator: ${e instanceof Error ? e.message : e})`
         }
       }
-      await api.rerenderClip(clip.id, undefined, renderOpts, usedSuggestions())
+      const { job_id } = await api.rerenderClip(clip.id, undefined, renderOpts, usedSuggestions())
+      onApplyStarted?.(job_id)
       // Off the draft and back on the clip: the draft is a file of the edits
       // as they were, and left up it went on showing the old text after the
       // re-render had burned the new (#147). The clip itself is replaced
@@ -1832,6 +1899,7 @@ export default function TimelineEditor({
           <CaptionStyleControls
             idPrefix={`clip-${clip.id}`}
             style={captionStyle}
+            showTitleText
             onChange={(key, value) => setCaptionStyle((s) => ({ ...s, [key]: value }))}
           />
         </div>
@@ -2202,12 +2270,15 @@ export default function TimelineEditor({
       <div className="flex gap-2 items-center flex-wrap">
         <button
           className="bg-raised px-3 py-1.5 rounded-md text-xs font-medium hover:bg-raised/70 disabled:opacity-40"
-          disabled={busy}
+          disabled={busy || applying}
           onClick={updatePreview}
           title={t("Renders the clip for real with ALL pending changes — same framing/zoom, tracking, captions, hook, music and speed as the final export. Can take up to a minute.")}
         >
-          {busy ? (
-            'Rendering…'
+          {previewStarted !== null ? (
+            <span className="inline-flex items-center gap-1.5">
+              <span className="size-3 rounded-full border-2 border-white/30 border-t-white animate-spin" />
+              {t('Rendering preview…')} {previewSecs}s
+            </span>
           ) : (
             <span className="inline-flex items-center gap-1.5">
               <Refresh /> Update preview
@@ -2231,11 +2302,17 @@ export default function TimelineEditor({
 
       <button
         className="btn-accent w-full disabled:opacity-40"
-        disabled={busy || !dirty}
+        disabled={busy || applying || !dirty}
         onClick={apply}
         title={dirty ? 'Re-render the clip with your changes' : 'No changes yet — edit something first'}
       >
-        {busy ? 'Queuing…' : dirty ? 'Apply edits (re-render)' : 'Apply edits — no changes yet'}
+        {applying
+          ? t('Applying… (see the video)')
+          : busy
+            ? 'Queuing…'
+            : dirty
+              ? 'Apply edits (re-render)'
+              : 'Apply edits — no changes yet'}
       </button>
       {notice && <p className="text-xs text-muted">{notice}</p>}
       <p className="text-[11px] text-muted/70">

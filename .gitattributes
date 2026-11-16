@@ -10,3 +10,5 @@ vendor/** linguist-vendored
 *.model binary
 *.mp4  binary
 *.png  binary
+*.ttf  binary
+*.bat text eol=crlf

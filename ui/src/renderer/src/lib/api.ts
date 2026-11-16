@@ -168,6 +168,8 @@ export const api = {
       `/videos/local/shape?path=${encodeURIComponent(path)}`
     ),
   jobs: () => request<Job[]>('/jobs'),
+  /** One job's row: the editor follows its Apply re-render with it. */
+  job: (jobId: number) => request<Job>(`/jobs/${jobId}`),
   /** The sports the Sports toggle offers, with their menus (sports/ on the
    *  engine). Empty when it has none. */
   sports: () => request<SportChoice[]>('/sports'),

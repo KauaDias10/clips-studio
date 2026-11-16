@@ -272,13 +272,28 @@ export interface LiveOverlay {
   // caption ghosts through behind the new one).
   burned?: { lines: CaptionLine[]; style: Required<CaptionStyle> } | null
   burnedHook?: { seconds: number } | null
+  /** Dragging the caption on the video places it there (custom position, % of height). */
+  moveCaption?: (yPct: number) => void
+  /** The title banner as it will burn (style changed in the editor): drawn
+   *  live, with the one already in the file blurred out under it. */
+  banner?: {
+    style: Required<CaptionStyle>
+    title: string
+    show: boolean
+    burned: Required<CaptionStyle> | null
+  } | null
+  /** Dragging the banner on the video places it there (% of the frame). */
+  moveBanner?: (xPct: number, yPct: number) => void
 }
 
 export interface CaptionStyle {
   font?: string
   font_size?: number
   color?: string
-  position?: 'bottom' | 'middle' | 'top'
+  /** 'custom': placed by hand, its bottom edge at caption_y. */
+  position?: 'bottom' | 'middle' | 'top' | 'custom'
+  /** custom: the caption's bottom edge, % of the frame height (8-98). */
+  caption_y?: number
   words_per_caption?: number
   uppercase?: boolean
   /** Light up each word as it is spoken (the short-form caption look). */
@@ -287,6 +302,42 @@ export interface CaptionStyle {
   /** Another colour for whoever isn't the main speaker (#126). */
   second_speaker?: boolean
   second_speaker_color?: string
+  /** The clip's title in a coloured box across the middle, for the whole
+   *  clip; captions sit right above it unless set to Top
+   *  (video_editor/title_banner.py). */
+  title_banner?: boolean
+  title_banner_color?: string
+  title_banner_text_color?: string
+  title_banner_font?: string
+  /** Where the banner's centre is, % of the frame width (10-90) and height (5-95). */
+  title_banner_x?: number
+  title_banner_y?: number
+  /** Letter size, % of the default (50-200). */
+  title_banner_size?: number
+  title_banner_uppercase?: boolean
+  /** One clip's own words for its banner; empty = the clip's title. */
+  title_banner_text?: string
+  /** Captions right next to the banner, or where `position` puts them. */
+  title_banner_captions?: 'next_to' | 'keep'
+  /** How long the banner stays on screen from the start, seconds; 0 = whole clip. */
+  title_banner_seconds?: number
+  /** The box around the letters, px at 1920 tall (0-80). */
+  title_banner_pad?: number
+  /** lines: a box round each line | block: one box | none: words only. */
+  title_banner_box?: 'lines' | 'block' | 'none'
+  /** The box, % (0 = see-through). */
+  title_banner_opacity?: number
+  /** Outline round the letters and drop shadow, px at 1920 tall (0-16). */
+  title_banner_outline?: number
+  title_banner_outline_color?: string
+  title_banner_shadow?: number
+  title_banner_italic?: boolean
+  /** Extra space between letters, px (-4-24). */
+  title_banner_spacing?: number
+  /** Degrees (-20-20); + leans up to the right. */
+  title_banner_tilt?: number
+  /** Each word appears as it is said instead of the whole line at once. */
+  reveal?: boolean
 }
 
 export type FilterName =

@@ -733,6 +733,10 @@ def process_video(url: str, config: dict, db: StateDB, force: bool = False) -> l
         stop = _stop_by(candidate)
         if stop is not None:
             opts = {**(opts or {}), "stop_by": stop}
+        # The title banner shows the clip's title (video_editor/title_banner.py).
+        style = (opts or {}).get("caption_style") or config["clips"].get("caption_style")
+        if (style or {}).get("title_banner") and meta is not None and meta.title:
+            opts = {**(opts or {}), "title_text": meta.title}
         return opts
 
     def _finish(candidate, meta, get_result) -> None:
@@ -1453,6 +1457,14 @@ def _render_files(
     # the worker is actively processing has been cancelled.
     cancel.check_active()
 
+    # The encoder the settings ask for (video.encoder). The render steps ask
+    # for encoder args without the config, which meant "auto": a PC set to
+    # "cpu" still got a GPU encoder. Choosing it here, with the config, makes
+    # every later call in this render use that choice.
+    from video.encoding import video_encoder_args
+
+    video_encoder_args(config)
+
     # A clip saved with the removed Highlights post style renders with the
     # person's own caption style and no title card, and is saved without it.
     opts = _drop_post_style(render_opts or {})
@@ -1477,7 +1489,11 @@ def _render_files(
     from video import outro as _outro
 
     wants_card = _outro.enabled(config)
-    render_path = clip_dir / f"{stem}.pre-card.mp4" if wants_card else final_path
+    # Without the card it still renders to a scratch file first: a re-render
+    # (same window, same name) used to write over the finished clip in place,
+    # and a failure, a cancel or the app closing halfway left a broken file
+    # that the clip's row still pointed at.
+    render_path = clip_dir / f"{stem}.pre-card.mp4" if wants_card else clip_dir / f"{stem}.rendering.mp4"
 
     # Longform rendering profile (render_opts["profile"], set only by the
     # longform module): 16:9 1920x1080 output, no vertical crop/tracking.
@@ -1549,8 +1565,31 @@ def _render_files(
     # Where someone other than the main speaker talks, when the caption style
     # asks for them in a second colour (#126). Empty for every other clip.
     turns: list = []
+    # Title banner (video_editor/title_banner.py): the clip's title in a box
+    # across the middle for the whole clip, captions in the middle sitting
+    # right above it. Laid out first: the captions are placed by it.
+    from video_editor import title_banner as _tb
+
+    banner = (
+        _tb.layout(opts.get("title_text") or candidate.hook, canvas, caption_style)
+        if _tb.enabled(caption_style) else None
+    )
+    burn_style = (
+        {**(caption_style or {}), **_tb.caption_placement(banner, canvas, caption_style)}
+        if banner is not None else caption_style
+    )
     if captions_on(config, opts):
         lines = opts.get("caption_lines")  # user-corrected caption text, if any
+        # Whisper starts a word early where speech follows a pause: the
+        # captions are timed to where the audio says the voice comes back
+        # (video/speech_sync.py). Nothing moves where no quiet is heard.
+        from video import speech_sync
+
+        quiet = speech_sync.quiet_spans(source, candidate.start, candidate.end)
+        cap_segments = speech_sync.snap_segments(segments, quiet)
+        lines = speech_sync.snap_lines(
+            lines, [(a - candidate.start, b - candidate.start) for a, b in quiet]
+        )
         if _wants_second_speaker(config, opts):
             from video.captions import DEFAULT_STYLE, build_caption_lines, paint_turns, tag_lines, words_of
 
@@ -1564,10 +1603,10 @@ def _render_files(
             if lines is not None:
                 # Also with nobody else talking: a mark an earlier render left
                 # on a saved line must not colour it now.
-                lines = tag_lines(lines, said, words_of(segments, candidate))
+                lines = tag_lines(lines, said, words_of(cap_segments, candidate))
             elif said:
                 wpc = {**DEFAULT_STYLE, **(caption_style or {})}["words_per_caption"]
-                lines = build_caption_lines(segments, candidate, wpc, said)
+                lines = build_caption_lines(cap_segments, candidate, wpc, said)
         if edit is not None and (edit.keep is not None or abs(edit.speed - 1) >= 0.01):
             # Sections were cut out and/or the clip was sped up: every
             # surviving caption shifts to its new time on the edited timeline.
@@ -1576,14 +1615,27 @@ def _render_files(
 
             if lines is None:
                 wpc = {**DEFAULT_STYLE, **(caption_style or {})}["words_per_caption"]
-                lines = build_caption_lines(segments, candidate, wpc)
+                lines = build_caption_lines(cap_segments, candidate, wpc)
             lines = remap_lines(lines, edit)
+        # The words, onto the same edited timeline as those lines (cuts, then
+        # speed), for the per-word highlight and reveal.
+        word_map = None
+        if edit is not None and (edit.keep is not None or abs(edit.speed - 1) >= 0.01):
+            def word_map(t, _edit=edit):
+                moved = _edit.remap(t)
+                return None if moved is None else moved / _edit.speed
         ass_path = build_captions(
-            segments, candidate, clip_dir / f"{stem}.ass",
-            style=caption_style,
+            cap_segments, candidate, clip_dir / f"{stem}.ass",
+            style=burn_style,
             lines=lines,
             canvas=canvas,
             language=content_language,
+            word_map=word_map,
+        )
+
+    if banner is not None:
+        ass_path = _tb.ensure_banner(
+            ass_path, clip_dir / f"{stem}.ass", banner, canvas=canvas, style=caption_style,
         )
 
     # Hook title (big text, top third, first few seconds) burns through the
@@ -1638,7 +1690,7 @@ def _render_files(
             # Cut a horizontal intermediate, track the subject, render 9:16.
             intermediate = clip_dir / f"{stem}.source.mp4"
             scratch.append(intermediate)
-            cut_clip(source, padded, intermediate)
+            cut_clip(source, padded, intermediate, staging=True)
 
             if edit is not None:
                 # Apply manual edits BEFORE tracking, so the tracker and
@@ -1708,9 +1760,16 @@ def _render_files(
                         shift = -0.12 if crop_mode == "bias_left" else 0.12
                         tracking["path"] = [(t, x + shift) for t, x in tracking["path"]]
                 else:
+                    from video import tracking_cache
+
                     tracking_cfg = config["tracking"]
-                    tracking = tracker.compute_tracking(
+                    # The editor renders one clip many times (preview, apply,
+                    # preview again): the same frames track the same way, so the
+                    # path is kept rather than worked out by YOLO every time.
+                    tracking = tracking_cache.tracked(
                         intermediate,
+                        Path(config["paths"]["data_dir"]) / "cache" / "tracking",
+                        lambda **kw: tracker.compute_tracking(intermediate, **kw),
                         model_name=tracking_cfg["detector"],
                         sample_fps=tracking_cfg["sample_fps"],
                         force_fit_blur=(crop_mode == "letterbox"),
@@ -1771,6 +1830,12 @@ def _render_files(
     # replacing it, which is what a held file permits.
     if wants_card:
         _outro.finish(render_path, final_path, config)
+    else:
+        # Only a finished render takes the clip's place, the way the card's
+        # join does it (a clip open in the app can be written, not replaced).
+        if not _outro._replace_with_retry(render_path, final_path, label="Clip"):
+            raise RuntimeError(f"{final_path.name} is open elsewhere and could not be written")
+        discard(render_path)
 
     # A clip the gaming layout handed to the standard renderer (the camera
     # filled the frame) is saved as what it got, so the editor shows that and

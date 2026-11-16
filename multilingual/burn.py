@@ -19,6 +19,7 @@ from pathlib import Path
 from core.binaries import ffmpeg, ffprobe
 from core.paths import discard
 from multilingual.languages import english_name
+from video.captions import subtitles_filter
 
 
 def _canvas_of(path: Path) -> tuple[int, int]:
@@ -89,7 +90,7 @@ def burn(
     cmd = [
         ffmpeg(), "-y", "-v", "error",
         "-i", str(base_video.resolve()),
-        "-vf", f"subtitles={built.name}",
+        "-vf", subtitles_filter(built.name),
         "-c:a", "copy",
         *video_encoder_args(config),
         # A language's own clip, posted as it is: first frame at 0 either way.

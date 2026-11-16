@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import type { LiveOverlay } from '../lib/types'
 import { bakedToOrig } from './TimelineEditor'
+import BannerPreview from './BannerPreview'
 
 /** Live DOM rendition of PENDING burned-in text — the hook title and
  *  restyled/corrected captions — drawn over the editor video in the same
@@ -20,6 +21,8 @@ export default function LiveTextOverlay({
   const boxRef = useRef<HTMLDivElement>(null)
   const [box, setBox] = useState({ w: 0, h: 0 })
   const [t, setT] = useState(0) // playhead in original-clip seconds
+  const dragging = useRef(false)
+  const [bannerDrag, setBannerDrag] = useState(false)
 
   useEffect(() => {
     const el = boxRef.current
@@ -45,7 +48,7 @@ export default function LiveTextOverlay({
     return () => cancelAnimationFrame(raf)
   }, [videoRef, bakedKeep, overlay === null])
 
-  if (!overlay || (!overlay.hook && !overlay.captions)) return null
+  if (!overlay || (!overlay.hook && !overlay.captions && !overlay.banner)) return null
 
   const s = box.h / 1920 // ASS values are calibrated at a 1920-tall canvas
 
@@ -60,7 +63,9 @@ export default function LiveTextOverlay({
   const lineColor = st && line?.speaker && st.second_speaker ? st.second_speaker_color : st?.color
   const capSize = st ? Math.max(40, Math.min(140, st.font_size)) * s : 0
   const capPos: React.CSSProperties =
-    st?.position === 'top'
+    st?.position === 'custom'
+      ? { bottom: `${100 - Math.max(8, Math.min(98, st.caption_y ?? 77))}%` }
+      : st?.position === 'top'
       ? { top: 140 * s }
       : st?.position === 'middle'
         ? { top: '50%', transform: 'translateY(-50%)' }
@@ -72,7 +77,9 @@ export default function LiveTextOverlay({
   const maskBand = (position: string, fontSizeAss: number, marginAss: number): JSX.Element => {
     const size = Math.max(40, Math.min(140, fontSizeAss)) * s
     const band: React.CSSProperties =
-      position === 'top'
+      position === 'custom'
+        ? { bottom: `${100 - (overlay.burned?.style.caption_y ?? 77)}%`, height: size * 3 }
+        : position === 'top'
         ? { top: Math.max(0, marginAss * s - size * 0.35), height: size * 3 }
         : position === 'middle'
           ? { top: '50%', transform: 'translateY(-50%)', height: size * 3 }
@@ -91,13 +98,70 @@ export default function LiveTextOverlay({
     )
   }
 
+  // Dragging the caption up or down places it there (custom position).
+  const moveTo = (e: React.PointerEvent): void => {
+    const el = boxRef.current
+    if (!el || !overlay.moveCaption) return
+    const r = el.getBoundingClientRect()
+    overlay.moveCaption(Math.round(Math.max(8, Math.min(98, ((e.clientY - r.top) / r.height) * 100))))
+  }
+
   const outline = (px: number): React.CSSProperties => ({
     WebkitTextStroke: `${Math.max(1, px)}px black`,
     textShadow: `0 ${Math.max(1, 2 * s)}px ${Math.max(2, 5 * s)}px rgba(0,0,0,0.85)`
   })
 
   return (
-    <div ref={boxRef} className="absolute inset-0 z-10 pointer-events-none overflow-hidden">
+    <div
+      ref={boxRef}
+      className="absolute inset-0 z-10 pointer-events-none overflow-hidden"
+      style={{ containerType: 'size' }}
+    >
+      {/* The banner already burned into the file, frosted over, and the new one on top. */}
+      {overlay.banner?.burned && (
+        <div
+          className="absolute"
+          style={{
+            left: `${overlay.banner.burned.title_banner_x}%`,
+            top: `${overlay.banner.burned.title_banner_y}%`,
+            width: '94%',
+            height: `${(((3 * 78 * overlay.banner.burned.title_banner_size) / 100) * 1.18 + 2 * overlay.banner.burned.title_banner_pad) / 19.2}%`,
+            transform: 'translate(-50%, -50%)',
+            borderRadius: 10 * s,
+            backdropFilter: 'blur(16px)',
+            background: 'rgba(0,0,0,0.35)'
+          }}
+        />
+      )}
+      {overlay.banner?.show && (
+        <BannerPreview
+          style={overlay.banner.style}
+          title={overlay.banner.title}
+          dragging={bannerDrag}
+          hint="Drag to move the title"
+          handlers={
+            overlay.moveBanner
+              ? {
+                  onPointerDown: (e) => {
+                    e.currentTarget.setPointerCapture(e.pointerId)
+                    setBannerDrag(true)
+                  },
+                  onPointerMove: (e) => {
+                    const el = boxRef.current
+                    if (!bannerDrag || !el || !overlay.moveBanner) return
+                    const r = el.getBoundingClientRect()
+                    overlay.moveBanner(
+                      Math.round(Math.max(10, Math.min(90, ((e.clientX - r.left) / r.width) * 100))),
+                      Math.round(Math.max(5, Math.min(95, ((e.clientY - r.top) / r.height) * 100)))
+                    )
+                  },
+                  onPointerUp: () => setBannerDrag(false),
+                  onPointerCancel: () => setBannerDrag(false)
+                }
+              : undefined
+          }
+        />
+      )}
       {/* masks go first so pending text draws on top of them */}
       {burnedLine &&
         overlay.burned &&
@@ -126,8 +190,20 @@ export default function LiveTextOverlay({
       )}
       {line && st && (
         <p
-          className="absolute inset-x-0 text-center leading-snug"
+          className={`absolute inset-x-0 text-center leading-snug select-none ${
+            overlay.moveCaption ? 'pointer-events-auto cursor-grab active:cursor-grabbing' : ''
+          }`}
+          title={overlay.moveCaption ? 'Drag up or down to move the captions' : undefined}
+          onPointerDown={(e) => {
+            if (!overlay.moveCaption) return
+            e.currentTarget.setPointerCapture(e.pointerId)
+            dragging.current = true
+          }}
+          onPointerMove={(e) => dragging.current && moveTo(e)}
+          onPointerUp={() => (dragging.current = false)}
+          onPointerCancel={() => (dragging.current = false)}
           style={{
+            touchAction: 'none',
             ...capPos,
             fontFamily: st.font,
             fontSize: `${capSize}px`,

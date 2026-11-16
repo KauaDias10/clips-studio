@@ -36,6 +36,7 @@ _CANDIDATES: dict[str, list[str]] = {
 }
 
 _selected: tuple[str, list[str]] | None = None  # cached (name, args)
+_requested = "auto"   # video.encoder as last given with the settings
 
 
 def _probe(args: list[str]) -> bool:
@@ -156,7 +157,7 @@ def sampled_frames(clip_path, every: int, width: int, height: int, hwaccel: bool
         "-i", str(clip_path),
         # Escape the comma: it separates filter arguments otherwise.
         "-vf", f"select='not(mod(n\\,{step}))'",
-        "-vsync", "0",              # keep the selected frames, do not resample
+        "-fps_mode", "passthrough",              # keep the selected frames, do not resample
         "-pix_fmt", "bgr24",        # what OpenCV and the models expect
         "-f", "rawvideo", "-",
     ]
@@ -182,8 +183,14 @@ def sampled_frames(clip_path, every: int, width: int, height: int, hwaccel: bool
 
 def video_encoder_args(config: dict | None = None) -> list[str]:
     """The `-c:v ...` argument block for FFmpeg output encoding."""
-    global _selected
-    mode = (config or {}).get("video", {}).get("encoder", "auto")
+    global _selected, _requested
+    if config is not None:
+        # A caller with the settings says what is wanted now; one without
+        # (the render steps) keeps whatever was chosen last.
+        mode = config.get("video", {}).get("encoder", "auto")
+        if mode != _requested:
+            _requested, _selected = mode, None
+    mode = _requested
     if _selected is None or (mode != "auto" and _selected[0] != mode):
         _selected = _select(mode)
     return _selected[1]

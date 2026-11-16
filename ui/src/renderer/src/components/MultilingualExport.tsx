@@ -516,6 +516,7 @@ export default function MultilingualExport({
                 onChange={setStyleField}
                 hideWordsPerCaption
                 hideSecondSpeaker
+                hideTitleBanner
               />
               <p className="text-[11px] text-muted/70 mt-2">
                 {t(
