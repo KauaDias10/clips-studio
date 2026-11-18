@@ -57,7 +57,7 @@ class Worker(threading.Thread):
         self.db_path = Path(config["paths"]["data_dir"]) / "state.db"
         self.logs_dir = Path(config["paths"]["data_dir"]) / "logs"
         self.prefetch = Prefetcher(
-            self.db_path, Path(config["paths"]["data_dir"]) / "downloads"
+            self.db_path, Path(config["paths"]["data_dir"]) / "downloads", config=config
         )
         self._wake = threading.Event()
         self._stop = threading.Event()

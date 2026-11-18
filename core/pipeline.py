@@ -234,6 +234,16 @@ def _check_length(db: StateDB, final_path: Path, made: float) -> None:
 
 
 def process_video(url: str, config: dict, db: StateDB, force: bool = False) -> list[RenderedClip]:
+    try:
+        return _process_video(url, config, db, force)
+    finally:
+        # Audio-first jobs leave their audio and section files in a scratch
+        # folder; gone whether the job finished, failed or was cancelled. A
+        # normal job never made one, so this does nothing for it.
+        _drop_audio_first_scratch(url, config)
+
+
+def _process_video(url: str, config: dict, db: StateDB, force: bool = False) -> list[RenderedClip]:
     import time
 
     data_dir = Path(config["paths"]["data_dir"])
@@ -247,11 +257,19 @@ def process_video(url: str, config: dict, db: StateDB, force: bool = False) -> l
 
     print(f"[1/4] Downloading: {url}")
     progress.emit(stage="download", message=url)
-    video = _cached_or_download(url, data_dir, db, vertical=_vertical_live_requested(config))
+    # A long remote video is fetched audio first (config download.audio_first):
+    # `video` is then the audio file, and only the clips' ranges are downloaded
+    # once they are chosen. None for every other job, which downloads as ever.
+    audio_first = _start_audio_first(url, config, data_dir)
+    if audio_first is not None:
+        video = audio_first.video
+    else:
+        video = _cached_or_download(url, data_dir, db, vertical=_vertical_live_requested(config))
     print(f"      {video.title} ({video.duration:.0f}s) -> {video.path}")
     progress.emit(stage="downloaded", video_id=video.video_id, title=video.title, duration=video.duration)
 
-    convert_slow_source(video, config)
+    if audio_first is None:
+        convert_slow_source(video, config)
     whole = bool(config["clips"].get("whole"))
     if whole:
         config = {**config, "clips": {**config["clips"], "outro": False}}
@@ -373,7 +391,9 @@ def process_video(url: str, config: dict, db: StateDB, force: bool = False) -> l
             from analysis.visual_features import extract_visual_features
 
             audio_raw = extract_audio_features(video.path)
-            visual_raw = extract_visual_features(video.path)
+            # Audio first: there is no picture yet. Empty visual signals are
+            # what fusion reads as "no data, neutral", never as a penalty.
+            visual_raw = {} if audio_first is not None else extract_visual_features(video.path)
             signals_out["signals"] = (audio_raw, visual_raw)
         except cancel.CancelledError:
             return  # the video was cancelled: its decode stopped with it
@@ -494,6 +514,19 @@ def process_video(url: str, config: dict, db: StateDB, force: bool = False) -> l
     cancel.wait(hype_thread, 60, video.video_id)  # network fetch; hard cap so it never stalls
     if sounds_thread is not None:
         cancel.wait(sounds_thread, 900, video.video_id)  # done long before Whisper, bar a stuck decode
+    if audio_first is not None and "signals" not in signals_out:
+        # The background pass failed. Fusion cannot work out the visual half
+        # from an audio file, so hand it what can be had: the audio's, or
+        # nothing (every window neutral).
+        try:
+            from analysis.audio_features import extract_audio_features
+
+            signals_out["signals"] = (extract_audio_features(video.path), {})
+        except cancel.CancelledError:
+            raise
+        except Exception as e:
+            print(f"      (audio signals unavailable: {e})")
+            signals_out["signals"] = ({}, {})
     llm = create_backend(_with_usable_model(config["llm"]))
     gaming_profile, sport_profile, chat, sounds = None, None, None, None
     if match is not None:
@@ -509,6 +542,11 @@ def process_video(url: str, config: dict, db: StateDB, force: bool = False) -> l
         from plugins import steps as plugin_steps
 
         find_config = plugin_steps.shortlist_config(config)
+    if audio_first is not None:
+        # The passes that look at frames (reading the screen's text, showing
+        # frames to a vision model) have no picture to read yet.
+        find_config = {**find_config, "scoring": {**(find_config.get("scoring") or {}),
+                                                  "look_at_game": False, "read_screen": False}}
     if whole:
         intent, rejections = None, []
         candidates = [ClipCandidate(0.0, video.duration, 100, hook=video.title,
@@ -536,7 +574,8 @@ def process_video(url: str, config: dict, db: StateDB, force: bool = False) -> l
             creator_context=creator_ctx,
             weight_bias=(creator_prefs or {}).get("weight_bias"),
             audience=hype_out.get("curve"),
-            **({"measure_reaction": False} if not modes.measures_reaction(config) else {}),
+            **({"measure_reaction": False}
+               if audio_first is not None or not modes.measures_reaction(config) else {}),
             **({"gaming": gaming_profile, "chat": chat, "sounds": sounds}
                if gaming_profile is not None else {}),
             **({"sport": sport_profile, "chat": chat, "sounds": sounds}
@@ -607,6 +646,18 @@ def process_video(url: str, config: dict, db: StateDB, force: bool = False) -> l
         )
         print(f"      [{c.score:3d}] {c.start:7.1f}s - {c.end:7.1f}s  {c.hook}")
         print(f"            ({breakdown})")
+
+    # Audio first: now that the clips are chosen, download just their ranges.
+    # Any trouble goes back to the whole video and the normal path below.
+    sections = None
+    if audio_first is not None:
+        cancel.check(video.video_id)
+        sections = _download_sections(url, candidates, video, audio_first)
+        if sections is None:
+            video = _cached_or_download(url, data_dir, db, vertical=_vertical_live_requested(config))
+            print(f"      Downloaded the whole video instead: {video.path}")
+            convert_slow_source(video, config)
+            audio_first = None
 
     print("[4/4] Rendering clips...")
     rendered = []
@@ -709,7 +760,12 @@ def process_video(url: str, config: dict, db: StateDB, force: bool = False) -> l
     # Gaming / Split-Screen: find the streamer's webcam once, from several of
     # the video's clips together, before any of them renders. Off -> None,
     # exactly the argument every render has always been given.
-    gaming_opts = _gaming_prepare(video.path, candidates, clip_dir, config) if modes.is_gaming(config) else None
+    if not modes.is_gaming(config):
+        gaming_opts = None
+    elif sections is not None:
+        gaming_opts = _gaming_prepare_in_sections(sections, candidates, clip_dir, config)
+    else:
+        gaming_opts = _gaming_prepare(video.path, candidates, clip_dir, config)
 
     # A clip the creator edited, found again by this run, is made with what
     # they saved (D33), as "Make it again with my edits" makes it; a match
@@ -772,10 +828,13 @@ def process_video(url: str, config: dict, db: StateDB, force: bool = False) -> l
     if remote is None:
         with ThreadPoolExecutor(max_workers=workers) as pool:
             futures = {
-                pool.submit(
+                (pool.submit(
                     _render_files, video.path, candidate, segments, clip_dir, config,
                     _opts_for(candidate, meta), content_lang,
-                ): (candidate, meta)
+                ) if sections is None else pool.submit(
+                    _render_in_section, sections, candidate, segments, clip_dir, config,
+                    _opts_for(candidate, meta), content_lang,
+                )): (candidate, meta)
                 for candidate, meta in zip(candidates, metas)
             }
             for future in as_completed(futures):
@@ -1283,6 +1342,193 @@ def _listening_for(config: dict, video, url: str) -> str | None:
     return sports.hotwords(config, video)
 
 
+# ---- audio first -------------------------------------------------------
+#
+# A long remote video is not downloaded whole. Its audio comes first and is
+# transcribed and scored (sound and chat stand in for the picture); then only
+# the chosen clips' ranges are downloaded and rendered, each from a section file
+# that starts `Section.start` seconds into the video. Every time in the job's
+# data (segments, candidates, the database rows) stays in whole-video seconds;
+# the shift into a section happens only at the moment a clip is cut.
+
+class _AudioFirst:
+    """What an audio-first job carries: the audio as a DownloadedVideo, and
+    the scratch folder that holds it and the sections."""
+
+    def __init__(self, video, scratch: Path):
+        self.video = video
+        self.scratch = scratch
+
+
+def _start_audio_first(url: str, config: dict, data_dir: Path):
+    """An _AudioFirst when this job is to be fetched audio first, else None,
+    and the job downloads the whole video as it always did.
+
+    None when: the mode is off, or auto and the video is short or of unknown
+    length; the job needs the picture (dispatch.audio_first_blocker); the video
+    is already on disk; it is a local file or a live stream; or the audio could
+    not be fetched. Cancellation is never swallowed.
+    """
+    from core.models import DownloadedVideo
+    from sources import dispatch, ytdlp_common
+
+    if dispatch.audio_first_mode(config) == "off":
+        return None
+    try:
+        source, video_id = dispatch.identify(url)
+        if source == "local" or not video_id:
+            return None
+        downloads = data_dir / "downloads"
+        why = dispatch.audio_first_blocker(config.get("clips")) or (
+            "it is rendered on another computer" if _remote_renderer(config) is not None else None
+        ) or ("it is a Vertical Live" if _vertical_live_requested(config) else None)
+        if why:
+            if dispatch.audio_first_mode(config) == "on":
+                print(f"      Audio first is not used for this job: {why}")
+            return None
+        if cached_source(downloads, video_id) is not None:
+            return None  # nothing to download: the normal path uses the file
+        info = dispatch.probe(url)
+        if info["is_live"] or not dispatch.wants_audio_first(config, source, info["duration"]):
+            return None
+        scratch = dispatch.scratch_dir(downloads, video_id)
+        try:
+            audio = ytdlp_common.find_output(scratch, f"{video_id}.audio") if scratch.is_dir() else None
+        except FileNotFoundError:
+            audio = None  # not prefetched
+        if audio is None:
+            print(f"      Long video ({info['duration'] / 60:.0f} min): downloading the audio first, "
+                  "then only the clips")
+            audio = dispatch.download_audio(url, scratch)
+        video = DownloadedVideo(
+            video_id=video_id, title=info["title"] or video_id, path=audio,
+            duration=info["duration"] or _whole_duration(audio), channel=info["channel"],
+            games=info.get("games") or [], description=info.get("description") or "",
+        )
+        return _AudioFirst(video, scratch)
+    except cancel.CancelledError:
+        raise
+    except Exception as e:
+        # Whatever went wrong, the normal download is the one that reports a
+        # real failure (a deleted video, no network) in its own words.
+        print(f"      (audio first did not work, downloading the whole video: {e})")
+        return None
+
+
+def _download_sections(url: str, candidates: list, video, audio_first: "_AudioFirst"):
+    """The Sections covering every candidate (padded, overlaps merged), or
+    None when the whole video should be downloaded instead: the platform
+    cannot give parts, a part did not arrive, a file is clearly short, or the
+    clips cover so much that parts would save nothing. Cancellation passes."""
+    from sources import dispatch, ytdlp_common
+
+    ranges = ytdlp_common.pad_and_merge([(c.start, c.end + END_PAD) for c in candidates], video.duration)
+    wanted = sum(hi - lo for lo, hi in ranges)
+    if video.duration > 0 and wanted >= 0.85 * video.duration:
+        print(f"      The clips' ranges are {wanted / 60:.0f} of {video.duration / 60:.0f} min: "
+              "downloading the whole video")
+        return None
+    print(f"      Downloading {len(ranges)} section(s), {wanted / 60:.1f} min of {video.duration / 60:.0f}")
+    progress.emit(stage="download", video_id=video.video_id, message="clip sections")
+    try:
+        sections = dispatch.download_sections(url, ranges, audio_first.scratch)
+        for sec in sections:
+            try:
+                got = _whole_duration(sec.path)
+            except Exception:
+                continue  # cannot be measured here; the render will say if it is bad
+            # A file much shorter than asked is a download that stopped early.
+            if got < (sec.end - sec.start) * 0.8:
+                raise ValueError(f"the part at {sec.start:.0f}s is {got:.0f}s, "
+                                 f"not {sec.end - sec.start:.0f}s")
+        for c in candidates:
+            if _section_for(sections, c) is None:
+                raise ValueError(f"no downloaded part covers {c.start:.0f}s-{c.end:.0f}s")
+    except cancel.CancelledError:
+        raise
+    except Exception as e:
+        print(f"      (downloading the clips' parts did not work, using the whole video: {e})")
+        return None
+    return sections
+
+
+def _section_for(sections: list, candidate):
+    """The Section a clip can be cut from, or None."""
+    for sec in sections:
+        if sec.covers(candidate.start, candidate.end + END_PAD):
+            return sec
+    return None
+
+
+def _shifted(candidate, offset: float):
+    from dataclasses import replace
+
+    return replace(candidate, start=candidate.start - offset, end=candidate.end - offset)
+
+
+def _shift_segments(segments: list[Segment], offset: float, lo: float, hi: float) -> list[Segment]:
+    """The transcript near [lo, hi] (whole-video seconds) as it reads inside a
+    file that starts `offset` seconds in."""
+    out = []
+    for sg in segments:
+        if sg.end < lo or sg.start > hi:
+            continue
+        words = None
+        if sg.words:
+            words = [{**w, "start": w["start"] - offset, "end": w["end"] - offset}
+                     if isinstance(w, dict) and "start" in w and "end" in w else w
+                     for w in sg.words]
+        out.append(Segment(sg.start - offset, sg.end - offset, sg.text, words))
+    return out
+
+
+def _render_in_section(sections: list, candidate, segments: list[Segment], clip_dir: Path,
+                       config: dict, render_opts: dict | None, content_language: str):
+    """_render_files for a clip cut from its section file: the window and the
+    transcript are shifted into the file's own time, and the clip keeps its
+    whole-video name."""
+    sec = _section_for(sections, candidate)
+    if sec is None:
+        raise FileNotFoundError(f"no downloaded part covers {candidate.start:.0f}s-{candidate.end:.0f}s")
+    local = _shifted(candidate, sec.start)
+    near = _shift_segments(segments, sec.start, candidate.start - 15, candidate.end + 15)
+    return _render_files(sec.path, local, near, clip_dir, config, render_opts, content_language,
+                         name_times=(candidate.start, candidate.end))
+
+
+def _gaming_prepare_in_sections(sections: list, candidates: list, clip_dir: Path, config: dict) -> dict | None:
+    """The webcam search for an audio-first job, run on a downloaded section
+    instead of the whole video: the one holding the most clips (the search
+    looks at a few), with their windows shifted into it. There is one layout
+    per stream, so one section is enough to find the camera."""
+    groups: dict[int, tuple] = {}
+    for c in candidates:
+        sec = _section_for(sections, c)
+        if sec is not None:
+            groups.setdefault(id(sec), (sec, []))[1].append(c)
+    if not groups:
+        return {"gaming": {}}
+    sec, found = max(groups.values(), key=lambda g: len(g[1]))
+    return _gaming_prepare(sec.path, [_shifted(c, sec.start) for c in found], clip_dir, config)
+
+
+def _drop_audio_first_scratch(url: str, config: dict) -> None:
+    """Delete this video's audio-first scratch folder, if there is one."""
+    import shutil
+
+    try:
+        from sources import dispatch
+
+        source, video_id = dispatch.identify(url)
+        if source == "local" or not video_id:
+            return
+        scratch = dispatch.scratch_dir(Path(config["paths"]["data_dir"]) / "downloads", video_id)
+        if scratch.is_dir():
+            shutil.rmtree(scratch, ignore_errors=True)
+    except Exception:
+        pass  # scratch cleanup never changes how a job ends
+
+
 def _cached_or_download(url: str, data_dir: Path, db: StateDB, vertical: bool = False):
     """Reprocessing must never depend on the platform being reachable: when
     the source file is already on disk, use it (with title/channel from the
@@ -1439,6 +1685,7 @@ def _render_files(
     config: dict,
     render_opts: dict | None = None,
     content_language: str = "en",
+    name_times: tuple[float, float] | None = None,
 ) -> tuple[Path, str]:
     """Pure file work — cut, track, crop, captions, color. NO database access
     and NO LLM call, so it is safe to run in a worker thread. Returns the
@@ -1472,7 +1719,10 @@ def _render_files(
         config = {**config, "clips": {**config["clips"], "whole": True, "outro": False}}
         opts["whole"] = True
     # Deterministic timestamp-based name: re-runs overwrite instead of piling up.
-    stem = f"clip_{int(candidate.start):05d}-{int(candidate.end):05d}"
+    # `name_times`: a clip cut from a section file is timed inside that file,
+    # but named by where it sits in the whole video (so a re-run overwrites it).
+    named_start, named_end = name_times or (candidate.start, candidate.end)
+    stem = f"clip_{int(named_start):05d}-{int(named_end):05d}"
     final_path = clip_dir / f"{stem}.mp4"
     clip_dir.mkdir(parents=True, exist_ok=True)
 

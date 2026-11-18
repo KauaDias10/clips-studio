@@ -114,6 +114,21 @@ analysis:
   chunk_overlap_seconds: 45
   long_video_threshold_seconds: 420
 
+selection:
+  # Long videos: show the AI only the "hottest" stretches (loud moments, chat
+  # spikes, laughter) instead of the whole transcript. Much faster on a local
+  # model; falls back to the full transcript when there are no signals.
+  hot_windows: auto            # auto = on for videos over hot_windows_min_minutes; on / off
+  hot_windows_min_minutes: 60
+  hot_window_seconds: 150      # length of each stretch the AI reads
+  hot_window_count: 0          # 0 = automatic (at least 12, 3 per wanted clip)
+
+download:
+  # Long remote streams: download the audio only, pick the clips, then download
+  # just those minutes. Falls back to the whole video if anything goes wrong.
+  audio_first: auto            # auto = on for remote videos over audio_first_min_minutes; on / off
+  audio_first_min_minutes: 90
+
 video:
   encoder: auto          # auto = first working GPU encoder (NVIDIA nvenc /
                          # AMD amf / Intel qsv), else CPU. Or force one:

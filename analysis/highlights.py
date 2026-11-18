@@ -132,20 +132,29 @@ def find_highlights(
     guidance="",  # str, or (start, end) -> str for the part of the video a chunk covers
     events_title: str | None = None,
     selection: int = 1,  # scoring.selection; 2: start_rules for the picks (analysis/fusion.py says)
+    hot=None,  # analysis.hot_windows.HotPlan: send only its windows' transcript, tagged with why they are hot
 ) -> tuple[list[ClipCandidate], list[Rejection]]:
     """Returns (selected clips, rejected candidates with reasons).
     `events` is an optional multimodal timeline [(second, description)] shown
     to the model alongside each chunk's transcript. `guidance` is extra
     instruction for one kind of video (the gaming profile's, analysis/gaming.py);
     empty, the prompt is exactly the standard one. `selection` 2 fits each
-    pick with start_rules; 1, the default, fits them as always."""
+    pick with start_rules; 1, the default, fits them as always. `hot` (long
+    streams): only those windows' lines go to the model, packed into chunks of
+    at most chunk_seconds, each line tagged ([LOUD +11dB], [CHAT 3.4x]); the
+    prompt, the parsing and the fitting are the same as for a whole transcript."""
     if not segments:
         return [], []
 
     prompt_template = PROMPT_PATH.read_text(encoding="utf-8")
     video_end = segments[-1].end
 
-    chunks = _chunk_segments(segments, chunk_seconds, chunk_overlap_seconds, long_video_threshold_seconds)
+    if hot is not None and hot.windows:
+        chunks = _chunk_hot_windows(segments, hot.windows, chunk_seconds)
+        print(f"  {hot.summary()}")
+    else:
+        hot = None
+        chunks = _chunk_segments(segments, chunk_seconds, chunk_overlap_seconds, long_video_threshold_seconds)
     print(f"  Analyzing {len(chunks)} chunk(s) with {llm.name}...")
 
     candidates: list[ClipCandidate] = []
@@ -155,7 +164,12 @@ def find_highlights(
         # land at roughly one chunk instead of the entire analysis stage.
         cancel.check_active()
         progress.emit(stage="analyze", current=i, total=len(chunks))
-        transcript_text = "\n".join(f"[{s.start:.1f} - {s.end:.1f}] {s.text}" for s in chunk)
+        if hot is not None:
+            transcript_text = "\n".join(
+                f"[{s.start:.1f} - {s.end:.1f}] " + (f"{m} " if (m := hot.markers(s.start, s.end)) else "") + s.text
+                for s in chunk)
+        else:
+            transcript_text = "\n".join(f"[{s.start:.1f} - {s.end:.1f}] {s.text}" for s in chunk)
         prompt = prompt_template.replace("{transcript}", transcript_text)
         # Guidance can depend on where in the video the chunk is (a stream that
         # changes game part way through).
@@ -421,6 +435,28 @@ def _chunk_segments(
             chunks.append(chunk)
         start = end - overlap_seconds
     return chunks
+
+
+def _chunk_hot_windows(
+    segments: list[Segment],
+    windows: list[tuple[float, float]],
+    chunk_seconds: float,
+) -> list[list[Segment]]:
+    """The lines inside hot windows (time order), one chunk per run of windows
+    that fits chunk_seconds of video. A line is in the first window it touches."""
+    chunks: list[list[Segment]] = []
+    group: list[Segment] = []
+    spent = 0.0
+    for start, end in sorted(windows):
+        if group and spent + (end - start) > chunk_seconds:
+            chunks.append(group)
+            group, spent = [], 0.0
+        last = group[-1].end if group else -1.0
+        group += [s for s in segments if s.end > start and s.start < end and s.start >= last - 1e-6]
+        spent += end - start
+    if group:
+        chunks.append(group)
+    return [c for c in chunks if c] or [segments]
 
 
 # ---- LLM I/O robustness -----------------------------------------------------

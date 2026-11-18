@@ -11,6 +11,7 @@ import re
 import shutil
 import tempfile
 from contextlib import contextmanager
+from dataclasses import dataclass
 from pathlib import Path
 
 from core import cancel, progress
@@ -389,3 +390,167 @@ def failure_note(error: BaseException) -> str | None:
             f"change it."
         )
     return f"Clips Kitty's bundled yt-dlp is {version}."
+
+
+# ---- audio first: the audio, then only the ranges the clips need -----------
+#
+# A multi-hour stream is mostly not clips. Downloading all of it (tens of GB)
+# before knowing which minutes matter wastes the disk and the line, so for a
+# long remote source the pipeline (core/pipeline.py) fetches only the audio,
+# picks the moments from that, and then downloads just those ranges. Everything
+# here is the platform-neutral part; each source module supplies the format
+# and the request itself.
+
+# Extra video either side of each clip. A clip is cut from its section at
+# window - section start, and a section that begins mid-GOP can lose its first
+# frames, so the clip's own edges must sit well inside the file.
+SECTION_PAD = 8.0
+# Two ranges this close are fetched as one: the gap is cheaper than a second
+# request (each one re-reads the playlist and starts ffmpeg).
+SECTION_MERGE_GAP = 30.0
+# ...but a long chain of near neighbours must not become one giant file.
+SECTION_MAX_SECONDS = 20 * 60
+
+# M4A when there is one (fastest to decode, what Whisper and FFmpeg read
+# fine), else whatever audio-only stream exists. Twitch and Kick HLS often have
+# no audio-only rendition: "worst" is the smallest muxed one, and the audio is
+# pulled out of it below, so the video in it is never kept.
+AUDIO_FORMAT = "bestaudio[ext=m4a]/bestaudio/best"
+AUDIO_FORMAT_HLS = "bestaudio/worst"
+
+_PARTIAL = (".part", ".ytdl", ".temp")
+
+
+@dataclass
+class Section:
+    """A downloaded piece of a video: `path` plays from `start` (seconds into
+    the whole video) to `end`. A time in the whole video maps into the file as
+    `time - start`."""
+
+    path: Path
+    start: float
+    end: float
+
+    def covers(self, start: float, end: float, slack: float = 0.5) -> bool:
+        return self.start - slack <= start and end <= self.end + slack
+
+
+def pad_and_merge(ranges, duration: float = 0.0, pad: float = SECTION_PAD,
+                  gap: float = SECTION_MERGE_GAP,
+                  max_seconds: float = SECTION_MAX_SECONDS) -> list[tuple[float, float]]:
+    """The ranges to download for these clip windows: each widened by `pad`
+    both sides (clamped to the video when its length `duration` is known),
+    overlapping or nearly touching ones merged, in time order."""
+    padded = []
+    for start, end in ranges:
+        lo = max(0.0, float(start) - pad)
+        hi = float(end) + pad
+        if duration > 0:
+            hi = min(hi, duration)
+        if hi > lo:
+            padded.append((lo, hi))
+    padded.sort()
+    merged: list[tuple[float, float]] = []
+    for lo, hi in padded:
+        if merged and lo <= merged[-1][1] + gap and max(hi, merged[-1][1]) - merged[-1][0] <= max_seconds:
+            merged[-1] = (merged[-1][0], max(merged[-1][1], hi))
+        else:
+            merged.append((lo, hi))
+    return merged
+
+
+def audio_opts(video_id: str | None, fmt: str = AUDIO_FORMAT) -> dict:
+    """yt-dlp options for an audio-only download, retries and progress as for
+    a video. The extraction step keeps the codec (no re-encode) and drops any
+    video stream a muxed HLS rendition came with."""
+    return {
+        "format": fmt,
+        "noplaylist": True,
+        "quiet": True,
+        "no_warnings": True,
+        "progress": True,
+        "postprocessors": [{"key": "FFmpegExtractAudio", "preferredcodec": "best"}],
+        **progress_opts(video_id),
+    }
+
+
+def section_opts(start: float, end: float, video_id: str | None) -> dict:
+    """yt-dlp options for downloading only [start, end] of a video.
+
+    force_keyframes_at_cuts re-encodes the section so it starts exactly at
+    `start`: a stream copy would begin at the keyframe before it, and every
+    time the pipeline maps into the file (`time - section start`) would then
+    be off by up to a GOP, which shows as captions out of step with the voice."""
+    from yt_dlp.utils import download_range_func
+
+    return {
+        "download_ranges": download_range_func(None, [(float(start), float(end))]),
+        "force_keyframes_at_cuts": True,
+        "noplaylist": True,
+        "quiet": True,
+        "no_warnings": True,
+        "progress": True,
+        **progress_opts(video_id),
+    }
+
+
+def find_output(output_dir: Path, stem: str) -> Path:
+    """The finished file yt-dlp wrote as `<stem>.<ext>`, whatever the ext is
+    (never a half-written fragment). FileNotFoundError when there is none."""
+    matches = [p for p in sorted(output_dir.glob(f"{stem}.*"))
+               if p.is_file() and not p.name.endswith(_PARTIAL) and ".part-Frag" not in p.name]
+    if not matches:
+        raise FileNotFoundError(f"yt-dlp finished but no file found for {stem}")
+    return matches[0]
+
+
+def clear_outputs(output_dir: Path, stem: str) -> None:
+    """Remove files left by an earlier try at `<stem>.*`, so a retry never
+    mistakes them for its own result."""
+    for p in output_dir.glob(f"{stem}.*"):
+        discard(p)
+
+
+def _retryable(error: BaseException) -> bool:
+    """A second try can help: not a cancellation, not a message already put in
+    the app's words (ValueError), not the video's own access rules."""
+    if isinstance(error, (cancel.CancelledError, ValueError)):
+        return False
+    text = str(error).lower()
+    return not any(sign in text for sign in _ACCESS_SIGNS)
+
+
+def download_audio_file(video_id: str, output_dir: Path, run, fmt: str = AUDIO_FORMAT) -> Path:
+    """The audio of one video as `<id>.audio.<ext>` in `output_dir`. `run(opts)`
+    makes the platform's request."""
+    output_dir.mkdir(parents=True, exist_ok=True)
+    stem = f"{video_id}.audio"
+    clear_outputs(output_dir, stem)
+    run({**audio_opts(video_id, fmt), "outtmpl": str(output_dir / f"{stem}.%(ext)s")})
+    return find_output(output_dir, stem)
+
+
+def download_section_files(video_id: str, ranges, output_dir: Path, run, attempts: int = 2) -> list[Section]:
+    """One file per range, in `output_dir`, as Sections. `run(opts)` makes the
+    platform's request for the one range in `opts`. A range that fails is tried
+    again (the connection, not the video, is what usually dropped); one that
+    still fails raises, and the caller falls back to the whole video."""
+    output_dir.mkdir(parents=True, exist_ok=True)
+    sections = []
+    for i, (start, end) in enumerate(ranges):
+        if video_id:
+            cancel.check(video_id)
+        stem = f"{video_id}.sec{i:03d}"
+        opts = {**section_opts(start, end, video_id), "outtmpl": str(output_dir / f"{stem}.%(ext)s")}
+        progress.emit(stage="download", video_id=video_id, section=i + 1, sections=len(ranges))
+        for attempt in range(1, attempts + 1):
+            clear_outputs(output_dir, stem)
+            try:
+                run(opts)
+                break
+            except Exception as e:
+                if attempt >= attempts or not _retryable(e):
+                    raise
+                print(f"      (section {i + 1}/{len(ranges)} failed, trying once more: {e})")
+        sections.append(Section(find_output(output_dir, stem), float(start), float(end)))
+    return sections
