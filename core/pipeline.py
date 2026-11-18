@@ -2102,7 +2102,8 @@ def _render_files(
         opts = {k: v for k, v in opts.items() if k != "captions"}
     render_opts_json = json.dumps(
         {
-            **opts,
+            # title_text is the clip's title as of this render, never a saved choice.
+            **{k: v for k, v in opts.items() if k != "title_text"},
             # For the editor: its caption preview colours from these, and its
             # lines break where they do.
             **({"speaker_turns": turns} if turns else {}),

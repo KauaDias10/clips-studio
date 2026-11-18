@@ -99,7 +99,7 @@ def test_a_clip_no_section_covers_is_an_error_not_a_wrong_cut(tmp_path):
 
 def test_the_clip_file_name_comes_from_the_whole_video_not_the_section(monkeypatch, tmp_path):
     """A re-run must overwrite the same file whichever way the source came."""
-    monkeypatch.setattr(pipeline, "cut_clip", lambda *a, **k: None)
+    monkeypatch.setattr(pipeline, "cut_clip", lambda source, cand, out, *a, **k: Path(out).write_bytes(b"x"))
     config = {"clips": {"vertical": False, "captions": False, "outro": False},
               "paths": {"data_dir": str(tmp_path)}, "tracking": {}}
     c = ClipCandidate(8.0, 38.0, 80)

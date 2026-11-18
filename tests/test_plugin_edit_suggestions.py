@@ -79,7 +79,8 @@ class Studio:
         self.fail = False
 
         def render(_source, candidate, _segments, clip_dir, _config, render_opts, _lang):
-            self.renders.append(json.loads(json.dumps(render_opts)))
+            # title_text is the clip's name for the banner, not a saved option.
+            self.renders.append({k: v for k, v in json.loads(json.dumps(render_opts)).items() if k != "title_text"})
             if self.fail:
                 raise RuntimeError("the render failed")
             clip_dir.mkdir(parents=True, exist_ok=True)

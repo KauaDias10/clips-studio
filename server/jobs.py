@@ -881,10 +881,6 @@ class Worker(threading.Thread):
             raise ValueError("A reel is joined from the match's clips, so it can't be re-rendered: "
                              "change the clips, then process the video again for a new reel.")
 
-        # The title banner shows the clip's title as it is now (renamed or not).
-        if clip["title"]:
-            render_opts["title_text"] = clip["title"]
-
         vrow = db.conn.execute(
             "SELECT title, channel_name FROM videos WHERE video_id = ?", (video_id,)
         ).fetchone()
@@ -915,7 +911,11 @@ class Worker(threading.Thread):
         # no longer there. The render itself never reads the database.
         content_lang = detected_language(video_id, data_dir / "transcripts")
         final_path, rendered_opts = _render_files(
-            source, candidate, segments, clip_dir, self.config, render_opts, content_lang
+            source, candidate, segments, clip_dir, self.config,
+            # The title banner shows the clip's title as it is now (renamed or
+            # not); it goes to this render only, never into the saved options.
+            {**render_opts, **({"title_text": clip["title"]} if clip["title"] else {})},
+            content_lang,
         )
         if render_opts.get("gaming") and rendered_opts:
             # Gaming / Reaction: keep what the render decided (the webcam it
