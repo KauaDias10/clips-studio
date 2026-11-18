@@ -336,6 +336,12 @@ export interface CaptionStyle {
   title_banner_spacing?: number
   /** Degrees (-20-20); + leans up to the right. */
   title_banner_tilt?: number
+  /** Letters fading top to bottom: title colour, then this middle colour
+   *  (optional), then the bottom one. '' = one colour. */
+  title_banner_gradient?: string
+  title_banner_gradient_mid?: string
+  /** '' = see-through black; else a solid shadow in this colour. */
+  title_banner_shadow_color?: string
   /** Each word appears as it is said instead of the whole line at once. */
   reveal?: boolean
 }

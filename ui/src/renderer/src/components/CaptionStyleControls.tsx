@@ -35,8 +35,60 @@ export const DEFAULT_CAPTION_STYLE: Required<CaptionStyle> = {
   title_banner_italic: false,
   title_banner_spacing: 0,
   title_banner_tilt: 0,
+  title_banner_gradient: '',
+  title_banner_gradient_mid: '',
+  title_banner_shadow_color: '',
   reveal: false
 }
+
+/** Ready-made title looks, as video_editor/title_banner.py PRESETS: one
+ *  click sets these over the style; everything stays adjustable after. */
+export const BANNER_PRESETS: { id: string; label: string; hint: string; style: Partial<CaptionStyle> }[] = [
+  {
+    id: 'classic',
+    label: 'Red box',
+    hint: 'White letters in a red box, the default.',
+    style: {
+      title_banner: true,
+      title_banner_font: 'Impact',
+      title_banner_box: 'lines',
+      title_banner_color: '#E01B24',
+      title_banner_text_color: '#FFFFFF',
+      title_banner_gradient: '',
+      title_banner_gradient_mid: '',
+      title_banner_outline: 0,
+      title_banner_shadow: 0,
+      title_banner_shadow_color: '',
+      title_banner_size: 100,
+      title_banner_tilt: 0,
+      title_banner_italic: false,
+      title_banner_spacing: 0,
+      title_banner_uppercase: true
+    }
+  },
+  {
+    id: 'vice',
+    label: 'GTA VI',
+    hint: 'Vice City sunset: yellow to pink to purple letters, night-blue outline, pink shadow. Made for thumbnails.',
+    style: {
+      title_banner: true,
+      title_banner_font: 'Anton',
+      title_banner_box: 'none',
+      title_banner_text_color: '#FFE27A',
+      title_banner_gradient_mid: '#FF5FA2',
+      title_banner_gradient: '#8B3DFF',
+      title_banner_outline: 8,
+      title_banner_outline_color: '#140A2E',
+      title_banner_shadow: 9,
+      title_banner_shadow_color: '#FF2E88',
+      title_banner_size: 150,
+      title_banner_tilt: 4,
+      title_banner_italic: false,
+      title_banner_spacing: 2,
+      title_banner_uppercase: true
+    }
+  }
+]
 
 // Banner geometry at 1080x1920, as video_editor/title_banner.py lays it out.
 const BANNER_FONT = 78
@@ -442,6 +494,26 @@ export default function CaptionStyleControls({
 
           {style.title_banner && (
             <div className="grid grid-cols-2 gap-3">
+              <div className="col-span-2">
+                <p className="label">Ready-made looks</p>
+                <div className="mt-1 flex flex-wrap gap-2">
+                  {BANNER_PRESETS.map((p) => (
+                    <button
+                      key={p.id}
+                      type="button"
+                      className="btn-ghost text-xs"
+                      title={t(p.hint)}
+                      onClick={() => {
+                        for (const [k, v] of Object.entries(p.style)) {
+                          onChange(k as keyof CaptionStyle, v as never)
+                        }
+                      }}
+                    >
+                      {t(p.label)}
+                    </button>
+                  ))}
+                </div>
+              </div>
               {showTitleText && (
                 <div className="col-span-2">
                   <label htmlFor={`${idPrefix}-banner-text`} className="label">
@@ -498,6 +570,56 @@ export default function CaptionStyleControls({
                   value={style.title_banner_text_color}
                   onChange={(e) => onChange('title_banner_text_color', e.target.value.toUpperCase())}
                 />
+              </div>
+              <div className="col-span-2">
+                <label className="flex items-center gap-2 cursor-pointer text-sm">
+                  <input
+                    type="checkbox"
+                    className="size-4 accent-[#38BDF8]"
+                    checked={Boolean(style.title_banner_gradient)}
+                    onChange={(e) => {
+                      onChange('title_banner_gradient', e.target.checked ? '#8B3DFF' : '')
+                      if (!e.target.checked) onChange('title_banner_gradient_mid', '')
+                    }}
+                  />
+                  {t('Colour fade on the letters (title colour at the top)')}
+                </label>
+                {style.title_banner_gradient && (
+                  <div className="mt-2 grid grid-cols-2 gap-3">
+                    <div>
+                      <label className="flex items-center gap-2 cursor-pointer label">
+                        <input
+                          type="checkbox"
+                          className="size-3.5 accent-[#38BDF8]"
+                          checked={Boolean(style.title_banner_gradient_mid)}
+                          onChange={(e) => onChange('title_banner_gradient_mid', e.target.checked ? '#FF5FA2' : '')}
+                        />
+                        {t('Middle colour')}
+                      </label>
+                      {style.title_banner_gradient_mid && (
+                        <input
+                          type="color"
+                          aria-label={t('Middle colour')}
+                          className="mt-1 h-9 w-full rounded-lg bg-raised cursor-pointer"
+                          value={style.title_banner_gradient_mid}
+                          onChange={(e) => onChange('title_banner_gradient_mid', e.target.value.toUpperCase())}
+                        />
+                      )}
+                    </div>
+                    <div>
+                      <label htmlFor={`${idPrefix}-banner-grad`} className="label">
+                        {t('Bottom colour')}
+                      </label>
+                      <input
+                        id={`${idPrefix}-banner-grad`}
+                        type="color"
+                        className="mt-1 h-9 w-full rounded-lg bg-raised cursor-pointer"
+                        value={style.title_banner_gradient}
+                        onChange={(e) => onChange('title_banner_gradient', e.target.value.toUpperCase())}
+                      />
+                    </div>
+                  </div>
+                )}
               </div>
               <div className="col-span-2">
                 <label htmlFor={`${idPrefix}-banner-size`} className="label">
@@ -649,15 +771,25 @@ export default function CaptionStyleControls({
                 <label htmlFor={`${idPrefix}-banner-shadow`} className="label">
                   Shadow ({style.title_banner_shadow})
                 </label>
-                <input
-                  id={`${idPrefix}-banner-shadow`}
-                  type="range"
-                  min={0}
-                  max={16}
-                  className="mt-3 w-full accent-[#38BDF8]"
-                  value={style.title_banner_shadow}
-                  onChange={(e) => onChange('title_banner_shadow', Number(e.target.value))}
-                />
+                <div className="flex items-center gap-2 mt-2">
+                  <input
+                    id={`${idPrefix}-banner-shadow`}
+                    type="range"
+                    min={0}
+                    max={16}
+                    className="w-full accent-[#38BDF8]"
+                    value={style.title_banner_shadow}
+                    onChange={(e) => onChange('title_banner_shadow', Number(e.target.value))}
+                  />
+                  <input
+                    type="color"
+                    aria-label={t('Shadow colour')}
+                    title={t('Shadow colour (solid). Unset: see-through black.')}
+                    className="h-7 w-10 rounded-md bg-raised cursor-pointer shrink-0"
+                    value={style.title_banner_shadow_color || '#000000'}
+                    onChange={(e) => onChange('title_banner_shadow_color', e.target.value.toUpperCase())}
+                  />
+                </div>
               </div>
               <div>
                 <label htmlFor={`${idPrefix}-banner-spacing`} className="label">

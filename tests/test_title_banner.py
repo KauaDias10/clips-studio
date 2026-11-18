@@ -162,3 +162,43 @@ def test_odd_values_fall_back(tmp_path):
     ass, _ = _styles(tmp_path, title_banner_box="weird", title_banner_opacity="x", title_banner_tilt=99)
     box = next(l for l in ass.splitlines() if l.startswith("Style: BannerBox,")).split(",")
     assert box[15] == "3" and box[6].startswith("&H00") and box[14] == "20"
+
+
+def test_letters_fade_in_bands_over_one_outline(tmp_path):
+    """A gradient title: per line, one outlined event underneath, then fill
+    only bands on the layer above, top colour first, bottom colour last."""
+    ass, events = _styles(tmp_path, title_banner_box="none", title_banner_text_color="#FF0000",
+                          title_banner_gradient="#0000FF", title_banner_tilt=5)
+    under = [e for e in events if e.startswith("Dialogue: 3")]
+    bands = [e for e in events if e.startswith("Dialogue: 4")]
+    lines = ass.count("Dialogue: 3")
+    assert lines == 2 and len(bands) > 10 * lines
+    assert all("\\bord0\\shad0\\clip(m " in b for b in bands)
+    assert all("\\org(" in e for e in under + bands)      # turns round the banner centre
+    first_line = under[0].split("}")[-1]
+    mine = [b for b in bands if b.endswith("}" + first_line)]
+    def rgb(event):   # ASS colours are &HBBGGRR&
+        h = event.split("\\1c&H")[1][:6]
+        return int(h[4:6], 16), int(h[2:4], 16), int(h[0:2], 16)
+
+    assert rgb(mine[0])[0] > 230 and rgb(mine[0])[2] < 25      # red at the top
+    assert rgb(mine[-1])[2] > 230 and rgb(mine[-1])[0] < 25    # blue at the bottom
+    assert "\\N" not in "".join(under + bands)             # a line per event
+
+
+def test_no_gradient_keeps_one_event_and_shadow_colour(tmp_path):
+    ass, events = _styles(tmp_path, title_banner_box="none", title_banner_shadow=4,
+                          title_banner_shadow_color="#FF2E88")
+    assert len(events) == 1
+    words = next(l for l in ass.splitlines() if l.startswith("Style: Banner,")).split(",")
+    assert words[6] == "&H00882EFF"                         # solid pink shadow
+    ass, _ = _styles(tmp_path, title_banner_shadow=4)
+    assert next(l for l in ass.splitlines() if l.startswith("Style: Banner,")).split(",")[6] == "&H80000000"
+
+
+def test_vice_preset_and_cap_band():
+    style = tb.PRESETS["vice"]
+    assert len(tb.gradient_stops(style)) == 3 and style["title_banner_box"] == "none"
+    top, bottom = tb.cap_band("Anton")
+    assert 0.2 < top < bottom < 0.9
+    assert tb.cap_band("No Such Font") == (tb._CAP_TOP, tb._CAP_BOTTOM)

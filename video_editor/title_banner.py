@@ -42,6 +42,35 @@ DEFAULTS = {
     "title_banner_italic": False,
     "title_banner_spacing": 0,             # extra space between letters, px
     "title_banner_tilt": 0,                # degrees, + leans up to the right
+    # Letters fading top to bottom: the title colour at the top, through
+    # the middle colour (optional) to this one at the bottom. "" = one colour.
+    "title_banner_gradient": "",
+    "title_banner_gradient_mid": "",
+    "title_banner_shadow_color": "",       # "" = see-through black; else solid
+}
+
+# Ready-made looks: a preset sets these keys over the person's style (the
+# UI offers the same list, BANNER_PRESETS in CaptionStyleControls.tsx).
+PRESETS = {
+    # Vice City sunset: yellow to pink to purple letters, a thick night-blue
+    # outline and a hot pink drop shadow, slightly tilted. Made for thumbnails.
+    "vice": {
+        "title_banner": True,
+        "title_banner_font": "Anton",
+        "title_banner_box": "none",
+        "title_banner_text_color": "#FFE27A",
+        "title_banner_gradient_mid": "#FF5FA2",
+        "title_banner_gradient": "#8B3DFF",
+        "title_banner_outline": 8,
+        "title_banner_outline_color": "#140A2E",
+        "title_banner_shadow": 9,
+        "title_banner_shadow_color": "#FF2E88",
+        "title_banner_size": 150,
+        "title_banner_tilt": 4,
+        "title_banner_italic": False,
+        "title_banner_spacing": 2,
+        "title_banner_uppercase": True,
+    },
 }
 
 # Calibrated for the 1080x1920 Shorts canvas; scaled to other frames.
@@ -234,8 +263,10 @@ def _style_lines(banner: Banner, canvas: tuple[int, int], style: dict | None) ->
             f"Style: BannerBox,{font},{banner.size},{hidden},{hidden},{hidden},{box},"
             f"-1,{italic},0,0,100,100,{spacing:g},{angle:g},4,{banner.pad},0,5,40,40,0,1"
         )
+    shadow_hex = str(opts.get("title_banner_shadow_color") or "")
+    shadow_colour = _ass_color(shadow_hex, "#000000") if shadow_hex else "&H80000000"
     lines.append(
-        f"Style: Banner,{font},{banner.size},{text},{text},{outline_colour},&H80000000,"
+        f"Style: Banner,{font},{banner.size},{text},{text},{outline_colour},{shadow_colour},"
         f"-1,{italic},0,0,100,100,{spacing:g},{angle:g},1,{outline:g},{shadow:g},5,40,40,0,1"
     )
     return lines
@@ -249,12 +280,176 @@ def _event(banner: Banner, canvas: tuple[int, int], name: str = "Banner", layer:
     )
 
 
-def _events(banner: Banner, canvas: tuple[int, int], style_lines: list[str]) -> list[str]:
+def _hex_rgb(value) -> tuple[int, int, int] | None:
+    h = str(value or "").lstrip("#")
+    if len(h) != 6 or any(c not in "0123456789abcdefABCDEF" for c in h):
+        return None
+    return int(h[0:2], 16), int(h[2:4], 16), int(h[4:6], 16)
+
+
+def gradient_stops(style: dict | None) -> list[tuple[int, int, int]]:
+    """The letters' colours top to bottom; one colour = no gradient."""
+    opts = {**DEFAULTS, **(style or {})}
+    top = _hex_rgb(opts.get("title_banner_text_color")) or _hex_rgb(DEFAULTS["title_banner_text_color"])
+    bottom = _hex_rgb(opts.get("title_banner_gradient"))
+    if bottom is None:
+        return [top]
+    mid = _hex_rgb(opts.get("title_banner_gradient_mid"))
+    return [top, mid, bottom] if mid else [top, bottom]
+
+
+def _mix(stops: list[tuple[int, int, int]], t: float) -> str:
+    t = max(0.0, min(1.0, t)) * (len(stops) - 1)
+    i = min(int(t), len(stops) - 2)
+    f = t - i
+    a, b = stops[i], stops[i + 1]
+    r, g, bl = (round(a[k] + (b[k] - a[k]) * f) for k in range(3))
+    return f"&H{bl:02X}{g:02X}{r:02X}&"
+
+
+# Where the capitals sit in a line, as fractions of its height from the top,
+# when the font file can't be read (about right for Impact and Arial).
+_CAP_TOP, _CAP_BOTTOM = 0.18, 0.83
+
+
+def _font_file(name: str) -> Path | None:
+    from video.captions import BUNDLED_FONTS, fonts_dir
+
+    if name in BUNDLED_FONTS:
+        where = fonts_dir()
+        return where / BUNDLED_FONTS[name] if where else None
+    return _system_fonts().get(name.lower())
+
+
+_SYSTEM_FONTS: dict[str, Path] | None = None
+
+
+def _system_fonts() -> dict[str, Path]:
+    """Family name -> file for the Windows fonts folder, read once. The
+    regular face is enough: only where the capitals sit is needed."""
+    global _SYSTEM_FONTS
+    if _SYSTEM_FONTS is None:
+        import os
+
+        found: dict[str, Path] = {}
+        folder = Path(os.environ.get("WINDIR", "C:/Windows")) / "Fonts"
+        try:
+            from fontTools.ttLib import TTFont
+
+            for f in sorted(folder.glob("*.tt[fc]")):
+                try:
+                    font = TTFont(f, fontNumber=0, lazy=True)
+                    # Both the old family name ("Arial Black") and the
+                    # typographic one ("Arial"): fonts are chosen by either.
+                    names = {font["name"].getDebugName(1), font["name"].getBestFamilyName()}
+                except Exception:
+                    continue
+                for family in filter(None, names):
+                    found.setdefault(family.lower(), f)
+        except ImportError:
+            pass
+        _SYSTEM_FONTS = found
+    return _SYSTEM_FONTS
+
+
+_CAPS: dict[str, tuple[float, float]] = {}
+
+
+def cap_band(font: str) -> tuple[float, float]:
+    """Top and bottom of the capitals in a line, fractions of its height.
+    libass makes a line exactly as tall as the font's Windows ascent plus
+    descent, so these place the gradient on the letters for any font."""
+    if font not in _CAPS:
+        band = (_CAP_TOP, _CAP_BOTTOM)
+        try:
+            from fontTools.ttLib import TTFont
+
+            path = _font_file(font)
+            if path is not None and path.exists():
+                os2 = TTFont(path, fontNumber=0, lazy=True)["OS/2"]
+                total = os2.usWinAscent + os2.usWinDescent
+                cap = getattr(os2, "sCapHeight", 0) or round(0.7 * os2.usWinAscent)
+                if total > 0:
+                    band = ((os2.usWinAscent - cap) / total, os2.usWinAscent / total)
+        except Exception:
+            pass
+        _CAPS[font] = band
+    return _CAPS[font]
+
+
+def _turn(x: float, y: float, cx: float, cy: float, degrees: float) -> tuple[int, int]:
+    """(x, y) turned round (cx, cy) as \\frz turns text: + is anticlockwise."""
+    import math
+
+    a = math.radians(degrees)
+    dx, dy = x - cx, y - cy
+    return round(cx + dx * math.cos(a) + dy * math.sin(a)), round(cy - dx * math.sin(a) + dy * math.cos(a))
+
+
+def _gradient_events(banner: Banner, canvas: tuple[int, int], stops, style: dict | None) -> list[str]:
+    """The words cut in thin bands, each its own colour: libass has no
+    gradient fill, but the same line drawn under a clip per band is one.
+
+    Each line is its own event at a known spot (libass makes a line as tall
+    as its font size), so every line gets the whole gradient across its
+    capitals. A tilted title turns round the banner's centre, and so do the
+    bands (a drawn clip).
+
+    The outline and the shadow are drawn once per line, under the bands,
+    and the bands are only the letters' fill (no border): a band's smoothed
+    edge then blends into the next band's colour, never shows a dark line
+    of outline between them."""
+    opts = {**DEFAULTS, **(style or {})}
+    from video.captions import FONTS
+
+    font = opts.get("title_banner_font")
+    font = font if font in FONTS else DEFAULTS["title_banner_font"]
+    cap_top, cap_bottom = cap_band(font)
+    angle = _pct(opts.get("title_banner_tilt"), 0.0, -20.0, 20.0)
+    end = _ass_time(banner.seconds) if banner.seconds > 0 else "9:59:59.00"
+    cx, cy = banner.center_x, banner.center_y
+    line_h = banner.size
+    texts = banner.text.split("\\N")
+    band = max(2, round(3 * canvas[1] / 1920))
+    reach = canvas[0] + canvas[1]   # past any edge, turned or not
+    out = []
+    for i, words in enumerate(texts):
+        line_cy = cy + (i - (len(texts) - 1) / 2) * line_h
+        at = f"\\an5\\pos({cx},{round(line_cy)})\\org({cx},{cy})"
+        out.append(f"Dialogue: 3,0:00:00.00,{end},Banner,,0,0,0,,{{{at}\\1c{_mix(stops, 0.5)}}}{words}")
+        y0 = line_cy - line_h / 2
+        lo, hi = y0 + cap_top * line_h, y0 + cap_bottom * line_h
+        edges = [lo + (hi - lo) * k / max(1, round((hi - lo) / band)) for k in range(round((hi - lo) / band) + 1)]
+        for k in range(len(edges) - 1):
+            a, b = edges[k], edges[k + 1]
+            t = ((a + b) / 2 - lo) / (hi - lo)
+            # The first and last band reach far out, for accents and the
+            # bits of letters past the capitals; each band overlaps the next
+            # a little, so their smoothed edges leave no gap.
+            a = a - reach if k == 0 else a
+            b = b + reach if k == len(edges) - 2 else b + canvas[1] / 1920
+            corners = [_turn(x, y, cx, cy, angle) for x, y in
+                       ((cx - reach, a), (cx + reach, a), (cx + reach, b), (cx - reach, b))]
+            shape = "m {} {} l {} {} {} {} {} {}".format(*[v for c in corners for v in c])
+            out.append(
+                f"Dialogue: 4,0:00:00.00,{end},Banner,,0,0,0,,"
+                f"{{{at}\\bord0\\shad0\\clip({shape})\\1c{_mix(stops, t)}}}{words}"
+            )
+    return out
+
+
+def _events(
+    banner: Banner, canvas: tuple[int, int], style_lines: list[str], style: dict | None = None
+) -> list[str]:
     """The box under the words, when there is a box."""
     out = []
     if any(line.startswith("Style: BannerBox,") for line in style_lines):
         out.append(_event(banner, canvas, "BannerBox", 2))
-    out.append(_event(banner, canvas, "Banner", 3))
+    stops = gradient_stops(style)
+    if len(stops) > 1:
+        out.extend(_gradient_events(banner, canvas, stops, style))
+    else:
+        out.append(_event(banner, canvas, "Banner", 3))
     return out
 
 
@@ -284,7 +479,7 @@ def ensure_banner(
     banner to `target` when there are no captions. Returns the file to burn."""
     styles = _style_lines(banner, canvas, style)
     line = "\n".join(styles)
-    event = "\n".join(_events(banner, canvas, styles))
+    event = "\n".join(_events(banner, canvas, styles, style))
     if ass_path is not None and ass_path.exists():
         content = ass_path.read_text(encoding="utf-8")
         content = content.replace("\n[Events]", f"\n{line}\n\n[Events]", 1)

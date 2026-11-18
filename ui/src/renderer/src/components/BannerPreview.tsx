@@ -111,6 +111,11 @@ export default function BannerPreview({
   const box = rgba(style.title_banner_color, style.title_banner_opacity)
   const outline = clamp(style.title_banner_outline, 0, 0, 16)
   const shadow = clamp(style.title_banner_shadow, 0, 0, 16)
+  const shadowColour = style.title_banner_shadow_color || 'rgba(0,0,0,0.5)'
+  const fade = Boolean(style.title_banner_gradient)
+  const fadeStops = [style.title_banner_text_color, style.title_banner_gradient_mid, style.title_banner_gradient].filter(
+    Boolean
+  )
   const letters: React.CSSProperties = {
     fontFamily: `'${style.title_banner_font}', sans-serif`,
     fontSize: cq(size),
@@ -160,17 +165,37 @@ export default function BannerPreview({
         {boxes}
         <div className="relative flex flex-col items-center">
           {lines.map((line, i) => (
-            <div
-              key={i}
-              style={{
-                ...letters,
-                color: style.title_banner_text_color,
-                WebkitTextStroke: outline > 0 ? `${cq(outline * 2)} ${style.title_banner_outline_color}` : undefined,
-                paintOrder: 'stroke fill',
-                textShadow: shadow > 0 ? `${cq(shadow)} ${cq(shadow)} 0 rgba(0,0,0,0.5)` : undefined
-              }}
-            >
-              {line}
+            <div key={i} className="relative">
+              <div
+                style={{
+                  ...letters,
+                  color: fade ? fadeStops[Math.floor(fadeStops.length / 2)] : style.title_banner_text_color,
+                  WebkitTextStroke: outline > 0 ? `${cq(outline * 2)} ${style.title_banner_outline_color}` : undefined,
+                  paintOrder: 'stroke fill',
+                  textShadow: shadow > 0 ? `${cq(shadow)} ${cq(shadow)} 0 ${shadowColour}` : undefined
+                }}
+              >
+                {line}
+              </div>
+              {fade && (
+                // The fade over the outlined letters, as the burn lays its
+                // bands over one outline: across the capitals of each line.
+                <div
+                  aria-hidden
+                  className="absolute inset-0"
+                  style={{
+                    ...letters,
+                    color: 'transparent',
+                    backgroundImage: `linear-gradient(to bottom, ${fadeStops
+                      .map((c, k) => `${c} ${22 + (56 * k) / (fadeStops.length - 1)}%`)
+                      .join(', ')})`,
+                    WebkitBackgroundClip: 'text',
+                    backgroundClip: 'text'
+                  }}
+                >
+                  {line}
+                </div>
+              )}
             </div>
           ))}
         </div>
