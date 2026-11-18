@@ -34,9 +34,9 @@ def _blur_fill(label: str, w: int, h: int) -> str:
             f"scale={max(2, w // 8)}:{max(2, h // 8)},gblur=sigma=12,scale={w}:{h}:flags=bilinear,setsar=1")
 
 
-def _element(i: int, e: Element) -> tuple[str, str]:
+def _element(i: int, e: Element, prefix: str = "") -> tuple[str, str]:
     """(filter chain, output label) making element `i` the size of its region."""
-    name = f"e{i}"
+    name = f"{prefix}e{i}"
     sx, sy, sw, sh = e.src
     _dx, _dy, dw, dh = e.dest
     cut = f"[0:v]crop={sw}:{sh}:{sx}:{sy}"
@@ -63,19 +63,42 @@ def _element(i: int, e: Element) -> tuple[str, str]:
     return chain, name
 
 
-def filter_graph(p: Plan, vf_extra: str = "", ass_name: str | None = None) -> str:
-    """The -filter_complex for one plan; the output pad is [v]."""
+def _canvas(p: Plan, prefix: str = "") -> tuple[list, str]:
+    """The chains composing one plan on the canvas, and its output label."""
     parts = [f"[0:v]crop=2:2:0:0,scale={OUT_W}:{OUT_H},setsar=1,"
-             f"drawbox=x=0:y=0:w={OUT_W}:h={OUT_H}:color=black:t=fill[base]"]
-    below = "base"
+             f"drawbox=x=0:y=0:w={OUT_W}:h={OUT_H}:color=black:t=fill[{prefix}base]"]
+    below = f"{prefix}base"
     for i, e in enumerate(p.elements):
-        chain, label = _element(i, e)
+        chain, label = _element(i, e, prefix)
         parts.append(chain)
-        out = f"l{i}"
+        out = f"{prefix}l{i}"
         parts.append(f"[{below}][{label}]overlay={e.dest[0]}:{e.dest[1]}[{out}]")
         below = out
+    return parts, below
+
+
+def filter_graph(p: Plan, vf_extra: str = "", ass_name: str | None = None) -> str:
+    """The -filter_complex for one plan; the output pad is [v]."""
+    parts, below = _canvas(p)
     parts.append(f"[{below}]format=yuv420p[v]")
-    graph = ";".join(parts)
+    return _finish(";".join(parts), vf_extra, ass_name)
+
+
+def stretches_graph(stretches: list, vf_extra: str = "", ass_name: str | None = None) -> str:
+    """One graph for a clip whose layout changes: [(plan, start, end)], every
+    plan composed over the whole clip and each shown only between its times
+    over the first. Captions and the colour filter go on once, at the end."""
+    parts, below = _canvas(stretches[0][0], "s0")
+    for k, (plan, start, end) in enumerate(stretches[1:], 1):
+        more, top = _canvas(plan, f"s{k}")
+        parts += more
+        parts.append(f"[{below}][{top}]overlay=0:0:enable='between(t,{start:.3f},{end:.3f})'[m{k}]")
+        below = f"m{k}"
+    parts.append(f"[{below}]format=yuv420p[v]")
+    return _finish(";".join(parts), vf_extra, ass_name)
+
+
+def _finish(graph: str, vf_extra: str, ass_name: str | None) -> str:
     if vf_extra:
         graph += f";[v]{vf_extra}[v]"
     if ass_name:
@@ -83,12 +106,16 @@ def filter_graph(p: Plan, vf_extra: str = "", ass_name: str | None = None) -> st
     return graph
 
 
-def render(clip_path: Path, output_path: Path, p: Plan, ass_path: Path | None = None,
+def render(clip_path: Path, output_path: Path, p: Plan | list, ass_path: Path | None = None,
            vf_extra: str = "", normalize: bool = True) -> Path:
+    """p: one Plan, or [(plan, start, end)] when the layout changes mid-clip."""
+    ass_name = ass_path.name if ass_path is not None else None
+    graph = (stretches_graph(p, vf_extra, ass_name) if isinstance(p, list)
+             else filter_graph(p, vf_extra, ass_name))
     cmd = [
         ffmpeg(), "-y",
         "-i", str(clip_path.resolve()),
-        "-filter_complex", filter_graph(p, vf_extra, ass_path.name if ass_path is not None else None),
+        "-filter_complex", graph,
         "-map", "[v]", "-map", "0:a:0?",
         *video_encoder_args(),
         "-c:a", "aac", "-b:a", "128k",

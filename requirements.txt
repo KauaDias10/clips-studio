@@ -26,6 +26,9 @@ yt-dlp-ejs==0.8.0
 # model was trained against this library's defaults, so it is not
 # interchangeable with another MFCC implementation.
 python_speech_features>=0.6,<1
+# Its MFCCs import scipy.fftpack, and it doesn't declare it: without scipy
+# the active-speaker model (TalkNet) can't run and no webcam is ever found.
+scipy>=1.11,<2
 faster-whisper>=1.2.1,<2
 # Its audio decoder. av 19 dropped open(metadata_errors=...), which faster-whisper
 # 1.2.1 still passes: every transcription failed on a fresh install.

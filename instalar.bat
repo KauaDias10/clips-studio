@@ -71,6 +71,11 @@ rem ---- 5. FFmpeg e interface ------------------------------------------------
 echo.
 echo [5/6] FFmpeg e interface
 ".venv\Scripts\python.exe" scripts\fetch_ffmpeg.py || goto :fail
+rem Modelos extras: TalkNet (acha a webcam), vozes da legenda, sons e o QuickJS do YouTube.
+".venv\Scripts\python.exe" scripts\fetch_asd_model.py
+".venv\Scripts\python.exe" scripts\fetch_voice_model.py
+".venv\Scripts\python.exe" scripts\fetch_panns.py
+".venv\Scripts\python.exe" scripts\fetch_quickjs.py
 pushd ui
 call npm install || (popd & goto :fail)
 popd

@@ -241,7 +241,13 @@ def render(intermediate: Path, output: Path, g: dict, config: dict, ass_path: Pa
             if head is not None:
                 heads[role] = head
     p = layout.plan(src_w, src_h, settings, heads)
-    compose.render(intermediate, output, p, ass_path=ass_path, vf_extra=vf_extra, normalize=normalize)
+    # The stream changing scene inside the clip (to the camera filling the
+    # frame, or the webcam moved): a layout per stretch (gaming/scenes.py).
+    staged = None
+    if not whole and config.get("clips", {}).get("gaming_scenes", True):
+        staged = _stretched(intermediate, settings, use, p, src_w, src_h, detector)
+    compose.render(intermediate, output, staged[0] if staged else p, ass_path=ass_path, vf_extra=vf_extra,
+                   normalize=normalize)
     face = None
     cam_el = p.element("cam")
     if cam_el is not None and "cam" in heads:
@@ -249,4 +255,40 @@ def render(intermediate: Path, output: Path, g: dict, config: dict, ass_path: Pa
                                   framing.safe_zone(p.safe))
     return {**(settings if whole else g), "layout": p.kind, "used_preset": p.preset,
             "used_cam": [round(v, 4) for v in use] if use else None,
-            **({"face": face} if face is not None else {})}
+            **({"face": face} if face is not None else {}),
+            **({"stretches": staged[1]} if staged else {})}
+
+
+def _stretched(intermediate: Path, settings: dict, use, base, src_w: int, src_h: int, detector: str):
+    """([(plan, start, end)], summary) when the clip's scene changes, else None.
+    Any failure here renders the clip with its one layout, as before."""
+    from gaming import scenes
+
+    try:
+        found = scenes.stretches(intermediate, tuple(use) if use else None, detector)
+    except Exception as e:
+        print(f"      Gaming: couldn't look for scene changes ({e}); one layout for the clip")
+        return None
+    if len(found) < 2:
+        return None
+    plans, summary = [], []
+    for s in found:
+        if s.kind == "cam" and use and scenes._near(s.cam, tuple(use)):
+            plan = base
+        elif s.kind in ("cam", "moved"):
+            head = detect.head_in_box(intermediate, s.cam, detector)
+            plan = layout.plan(src_w, src_h, {**settings, "cam": list(s.cam)}, {"cam": head} if head else {})
+        elif s.kind == "camera":
+            plan = layout.Plan("camera", (layout.Element(
+                "cam", scenes.camera_crop(s.head, src_w, src_h), (0, 0, layout.OUT_W, layout.OUT_H)),))
+        else:
+            plan = layout.plan(src_w, src_h, {**settings, "cam": None}, {})
+        plans.append((plan, s.start, s.end))
+        summary.append({"start": round(s.start, 2), "end": round(s.end, 2), "kind": s.kind,
+                        **({"cam": [round(v, 4) for v in s.cam]} if s.cam else {})})
+    if all(plan is base for plan, _a, _b in plans):
+        return None
+    said = {"cam": "webcam", "moved": "webcam moved", "camera": "camera full screen", "game": "game only"}
+    print("      Gaming: the scene changes in this clip: "
+          + ", ".join(f"{x['start']:.0f}-{x['end']:.0f}s {said[x['kind']]}" for x in summary))
+    return plans, summary
