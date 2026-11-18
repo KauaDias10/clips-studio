@@ -1623,13 +1623,16 @@ class StateDB:
         )
         self.conn.commit()
 
-    def claim_next_job(self) -> sqlite3.Row | None:
+    def claim_next_job(self, types: tuple[str, ...] | None = None) -> sqlite3.Row | None:
         """Atomically claim the next queued job (single-worker model).
 
         Ordered by position, not id: the user can reorder the queue, and a job
-        moved to the front must genuinely run next."""
+        moved to the front must genuinely run next. `types`: only jobs of these
+        types (a paused queue still makes live clips)."""
+        only = f" AND type IN ({','.join('?' * len(types))})" if types else ""
         row = self.conn.execute(
-            "SELECT * FROM jobs WHERE status = 'queued' ORDER BY position, id LIMIT 1"
+            f"SELECT * FROM jobs WHERE status = 'queued'{only} ORDER BY position, id LIMIT 1",
+            tuple(types or ()),
         ).fetchone()
         if row is None:
             return None

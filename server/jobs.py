@@ -131,11 +131,11 @@ class Worker(threading.Thread):
             # left alone — throwing away an hour of finished GPU work because
             # someone wants the queue to stop after this one would be its own
             # kind of broken.
-            if queue.is_paused(db):
-                self._wake.wait(timeout=2.0)
-                self._wake.clear()
-                continue
-            job = db.claim_next_job()
+            # Live clips are the exception: a moment from a stream that is
+            # still going is wanted now, and stopping the queue is about the
+            # batch of videos, not about live clipping someone just started.
+            paused = queue.is_paused(db)
+            job = db.claim_next_job(("live_clip",) if paused else None)
             if job is None:
                 self._wake.wait(timeout=2.0)
                 self._wake.clear()
