@@ -12,6 +12,19 @@ fixed were often broken in a way that only showed up on somebody else's machine.
 
 ### Added
 
+- **Today's biggest streams, clipped on their own.** A topic watch (for example
+  "GTA 6") finds the most viewed YouTube streams that finished today and queues
+  the ones not clipped before, once a day. Also a one-off search
+  (`GET /discover/lives`) and the `find_top_lives` MCP tool.
+- **Long streams are faster.** For videos over an hour, the AI reads only the
+  hottest stretches (loud moments, chat spikes, laughter, marked as
+  `[LOUD +11dB]` / `[CHAT 3.4x]`) instead of the whole transcript, and the
+  first four minutes' "hi chat" rush no longer counts as a moment
+  (`selection.hot_windows`).
+- **Long streams download less.** Over 90 minutes, only the audio is
+  downloaded to find the moments, then only the chosen clips' minutes
+  (`download.audio_first`). Anything that goes wrong falls back to the
+  whole video.
 - **Optional Clip updates.** App-wide Approve/Deny cards, private Discord
   updates and an Away from desk approval gate, with local-model wording and
   plain-text fallback. Includes a configurable attorney joke popup. Off by default.
