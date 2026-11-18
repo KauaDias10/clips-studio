@@ -17,6 +17,7 @@ loopback-only relay that forwards FFmpeg's range requests over IPv4.
 
 import hashlib
 import os
+import re
 import secrets
 import subprocess
 import threading
@@ -29,6 +30,7 @@ from core.binaries import ffmpeg, ffprobe
 from core.paths import discard
 
 FRAME_WIDTH = 960
+_TWITCH_CHANNEL = re.compile(r"^(https?://)?(www\.|m\.)?twitch\.tv/[A-Za-z0-9_]{2,25}/?$")
 _TTL = 1800.0                  # media URLs from YouTube expire in hours; keep ours short
 _probed: dict[str, tuple[float, str, float, dict]] = {}
 _lock = threading.Lock()
@@ -153,7 +155,10 @@ def _probe_link(url: str) -> tuple[str, float, dict]:
     if platform_of_link(url) not in ("youtube", "twitch", "kick"):
         raise NotFrameable("Paste a YouTube, Twitch or Kick video link to see its frames.")
     source, video_id = identify(url)
-    if not video_id:
+    # A Twitch channel's own page is its live stream, when it is live: live
+    # clipping sets its layout up on the stream as it is now (live/).
+    channel_live = not video_id and source == "twitch" and bool(_TWITCH_CHANNEL.match(url.strip()))
+    if not video_id and not channel_live:
         raise NotFrameable("That link isn't a single video, so there are no frames to show.")
     with _lock:
         hit = _probed.get(url)
@@ -177,6 +182,8 @@ def _probe_link(url: str) -> tuple[str, float, dict]:
     try:
         info = extract_info(url, opts)
     except yt_dlp.utils.DownloadError as e:
+        if channel_live:
+            raise NotFrameable("That channel isn't live right now.") from e
         raise NotFrameable(f"Couldn't open that video: {str(e).splitlines()[0][:200]}") from e
     if info.get("is_live") and source != "twitch":
         # A Twitch VOD of a stream still going is a recording that can be
@@ -190,8 +197,10 @@ def _probe_link(url: str) -> tuple[str, float, dict]:
     duration = float(info.get("duration") or 0.0)
     if source == "youtube":
         media, headers = _relayed(media, headers), {}
+    if channel_live:
+        duration = 0.0          # a live: every frame is "now"
     with _lock:
-        _probed[url] = (time.monotonic() + _TTL, media, duration, headers)
+        _probed[url] = (time.monotonic() + (120.0 if channel_live else _TTL), media, duration, headers)
     return media, duration, headers
 
 

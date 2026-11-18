@@ -1,7 +1,10 @@
 import { useCallback, useEffect, useState } from 'react'
+import CaptionStyleControls, { DEFAULT_CAPTION_STYLE } from '../components/CaptionStyleControls'
+import GamingLayoutEditor from '../components/GamingLayoutEditor'
+import { PRESETS } from '../lib/gamingLayout'
 import { api } from '../lib/api'
 import { live, type LiveLogEntry, type LiveOptions, type LiveSessionStatus } from '../lib/live'
-import type { Clip, StudioEvent } from '../lib/types'
+import type { CaptionStyle, Clip, StudioEvent } from '../lib/types'
 import { useEvents } from '../lib/useEvents'
 import { t } from '../lib/i18n'
 
@@ -22,13 +25,33 @@ const TONE: Record<LiveLogEntry['type'], string> = {
   error: 'text-error'
 }
 
-function loadOptions(): LiveOptions {
+/** The caption style last used on the Generate bar: a live starts from the
+ *  same look as the videos. */
+function videoStyle(): CaptionStyle {
   try {
-    return { pre_seconds: 25, post_seconds: 8, min_votes: 3, chat_bursts: true, max_clips: 40,
-      ...JSON.parse(localStorage.getItem(OPTIONS_KEY) || '{}') }
+    return { ...DEFAULT_CAPTION_STYLE, ...JSON.parse(localStorage.getItem('generate-caption-style') ?? '{}') }
   } catch {
-    return { pre_seconds: 25, post_seconds: 8, min_votes: 3, chat_bursts: true, max_clips: 40 }
+    return { ...DEFAULT_CAPTION_STYLE }
   }
+}
+
+function loadOptions(): LiveOptions {
+  const base: LiveOptions = { pre_seconds: 25, post_seconds: 8, min_votes: 3, chat_bursts: true, max_clips: 40,
+    captions: true }
+  try {
+    const saved = { ...base, ...JSON.parse(localStorage.getItem(OPTIONS_KEY) || '{}') } as LiveOptions
+    return { ...saved, caption_style: saved.caption_style ?? videoStyle() }
+  } catch {
+    return { ...base, caption_style: videoStyle() }
+  }
+}
+
+/** 'alanzoka' from what was typed, or '' (the layout needs the live's own frames). */
+function typedChannel(value: string): string {
+  const v = value.trim().replace(/\/+$/, '')
+  const m = v.match(/twitch\.tv\/([A-Za-z0-9_]{2,25})$/i)
+  const name = (m ? m[1] : v).replace(/^[#@]/, '')
+  return /^[A-Za-z0-9_]{2,25}$/.test(name) ? name.toLowerCase() : ''
 }
 
 function clock(epoch: number): string {
@@ -167,6 +190,21 @@ export default function Live({ onOpenInStudio }: { onOpenInStudio?: (videoId: st
   const [options, setOptions] = useState<LiveOptions>(loadOptions)
   const [error, setError] = useState('')
   const [busy, setBusy] = useState(false)
+  const [styleOpen, setStyleOpen] = useState(false)
+  const [layoutOpen, setLayoutOpen] = useState(false)
+  const typed = typedChannel(channel)
+  const style = { ...DEFAULT_CAPTION_STYLE, ...(options.caption_style ?? {}) } as Required<CaptionStyle>
+  const setStyle = <K extends keyof CaptionStyle>(k: K, v: CaptionStyle[K]): void =>
+    setOptions((prev) => {
+      const next = { ...prev, caption_style: { ...DEFAULT_CAPTION_STYLE, ...(prev.caption_style ?? {}), [k]: v } }
+      try {
+        localStorage.setItem(OPTIONS_KEY, JSON.stringify(next))
+      } catch {
+        /* private window */
+      }
+      return next
+    })
+  const layout = options.gaming_layout
 
   const refresh = useCallback(async () => {
     try {
@@ -260,6 +298,76 @@ export default function Live({ onOpenInStudio }: { onOpenInStudio?: (videoId: st
             {t('Clip when chat explodes')}
           </label>
         </div>
+        <div className="flex items-center gap-x-5 gap-y-2 flex-wrap border-t border-raised/60 pt-3">
+          <label className="flex items-center gap-2 text-sm cursor-pointer">
+            <input
+              type="checkbox"
+              className="size-4 accent-[#38BDF8]"
+              checked={options.captions !== false}
+              onChange={(e) => set({ captions: e.target.checked })}
+            />
+            {t('Captions')}
+          </label>
+          {options.captions !== false && (
+            <button type="button" className="btn-ghost !py-1" onClick={() => setStyleOpen((v) => !v)}>
+              {styleOpen ? t('Hide caption & title style') : t('Caption & title style…')}
+            </button>
+          )}
+          <label
+            className="flex items-center gap-2 text-sm cursor-pointer"
+            title={t('For game streams and reaction videos: the streamer’s webcam over the game. It follows the stream when it switches to the camera full screen or the webcam moves.')}
+          >
+            <input
+              type="checkbox"
+              className="size-4 accent-[#38BDF8]"
+              checked={Boolean(options.gaming)}
+              onChange={(e) => set({ gaming: e.target.checked })}
+            />
+            {t('Gaming / Reaction')} <span className="text-muted text-xs">{t('(webcam + game)')}</span>
+          </label>
+          {options.gaming && (
+            <span className="flex items-center gap-2 text-xs">
+              <span className="text-muted">
+                {layout
+                  ? t(PRESETS[layout.preset ?? 'half']?.label ?? 'Split')
+                  : t('Webcam found automatically')}
+              </span>
+              <button
+                type="button"
+                className="btn-ghost !py-1"
+                disabled={!typed}
+                title={!typed ? t('Type the channel first: the layout is set up on the live itself') : undefined}
+                onClick={() => setLayoutOpen(true)}
+              >
+                {layout ? t('Change layout…') : t('Choose layout…')}
+              </button>
+              {layout && (
+                <button type="button" className="btn-ghost !py-1" onClick={() => set({ gaming_layout: undefined })}>
+                  {t('Automatic')}
+                </button>
+              )}
+            </span>
+          )}
+        </div>
+        {styleOpen && options.captions !== false && (
+          <div className="border-t border-raised/60 pt-3">
+            <CaptionStyleControls idPrefix="live" style={style} onChange={setStyle} />
+          </div>
+        )}
+        {layoutOpen && typed && (
+          <GamingLayoutEditor
+            source={{ url: `https://www.twitch.tv/${typed}` }}
+            context="video"
+            settings={layout ?? {}}
+            remember={false}
+            canRemember={false}
+            onClose={() => setLayoutOpen(false)}
+            onDone={(next) => {
+              set({ gaming_layout: next, gaming: true })
+              setLayoutOpen(false)
+            }}
+          />
+        )}
         <p className="text-xs text-muted">
           {t('Chat and the video are read without logging in. Clips viewers make on Twitch need your Twitch account connected in Settings.')}
         </p>

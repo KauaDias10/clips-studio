@@ -379,5 +379,15 @@
   "Max clips": "Máx. de cortes",
   "Clip when chat explodes": "Cortar quando o chat explodir",
   "Chat and the video are read without logging in. Clips viewers make on Twitch need your Twitch account connected in Settings.": "O chat e o vídeo são lidos sem login. Para usar os clipes que os viewers criam na Twitch, conecte sua conta da Twitch em Configurações.",
-  "Live clip": "Corte ao vivo"
+  "Live clip": "Corte ao vivo",
+  "Caption & title style…": "Estilo da legenda e do título…",
+  "Hide caption & title style": "Esconder estilo da legenda e do título",
+  "For game streams and reaction videos: the streamer’s webcam over the game. It follows the stream when it switches to the camera full screen or the webcam moves.": "Para lives de jogo e react: a webcam do streamer junto com o jogo. Acompanha a live quando ela muda para a câmera em tela cheia ou quando a webcam muda de lugar.",
+  "Gaming / Reaction": "Gaming / React",
+  "(webcam + game)": "(webcam + jogo)",
+  "Webcam found automatically": "Webcam encontrada automaticamente",
+  "Type the channel first: the layout is set up on the live itself": "Digite o canal primeiro: o layout é montado em cima da própria live",
+  "Change layout…": "Trocar layout…",
+  "Choose layout…": "Escolher layout…",
+  "Automatic": "Automático"
 }

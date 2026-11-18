@@ -62,6 +62,9 @@ def install(app, *, config: dict, data_dir: Path, db, worker, broadcaster, accou
             old = sessions.get(name)
             if old and old.running:
                 return old.status()
+            from live.clip_job import forget_layout
+
+            forget_layout(name)
             s = LiveSession(name, config, data_dir, queue_clip, accounts=accounts,
                             publish=broadcaster.publish, options=options)
             sessions[name] = s

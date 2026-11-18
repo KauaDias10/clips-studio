@@ -17,6 +17,15 @@ from pathlib import Path
 from core.models import ClipCandidate
 
 
+# The gaming settings found for each live channel, kept while the app runs.
+_GAMING: dict[str, dict] = {}
+
+
+def forget_layout(channel: str) -> None:
+    """A live started again (maybe with another layout): look again."""
+    _GAMING.pop(channel, None)
+
+
 def _probe_seconds(path: Path) -> float:
     import subprocess
 
@@ -95,7 +104,27 @@ def run_live_clip(db, config: dict, payload: dict) -> None:
 
     clip_dir = (data_dir / "clips" / pipeline._safe_name(channel, "unknown-channel")
                 / f"ao vivo [{vid}]")
+    if cfg["clips"].get("gaming"):
+        # Gaming / Reaction: the webcam over the game, as for a video. Found
+        # once per live (or the layout set up before starting), then reused;
+        # each clip still follows scene changes (gaming/scenes.py).
+        g = _GAMING.get(channel)
+        if g is None:
+            g = pipeline._gaming_prepare(source, [candidate], clip_dir, cfg) or {}
+            if (g.get("gaming") or {}).get("cam") or (g.get("gaming") or {}).get("by") == "user":
+                _GAMING[channel] = g
+        opts.update(g)
     final_path, opts_json = pipeline._render_files(source, candidate, segments, clip_dir, cfg,
                                                    opts or None, lang)
+    if cfg["clips"].get("gaming") and channel not in _GAMING:
+        # The webcam this clip found on its own, for the rest of the live.
+        import json
+
+        try:
+            used = (json.loads(opts_json or "{}").get("gaming") or {}).get("used_cam")
+        except ValueError:
+            used = None
+        if used:
+            _GAMING[channel] = {"gaming": {**(opts.get("gaming") or {}), "cam": used, "by": "video"}}
     pipeline._register_clip(db, vid, candidate, final_path, meta, opts_json, cfg)
     db.set_video_status(vid, "done")

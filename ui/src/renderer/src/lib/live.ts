@@ -1,5 +1,6 @@
 import { API_BASE } from './api'
 import { sessionSecret } from './plugins'
+import type { CaptionStyle, GamingSettings } from './types'
 
 export interface LiveLogEntry {
   t: number
@@ -37,7 +38,9 @@ export interface LiveOptions {
   chat_bursts?: boolean
   max_clips?: number
   captions?: boolean
+  caption_style?: CaptionStyle
   gaming?: boolean
+  gaming_layout?: GamingSettings
 }
 
 async function call<T>(path: string, method = 'GET', body?: unknown): Promise<T> {
