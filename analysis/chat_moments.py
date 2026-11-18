@@ -29,14 +29,25 @@ PLAIN_MIN_BURST = 6
 MAX_EVENTS = 60
 MERGE_SECONDS = 10    # bursts this close together are one moment
 
+# Chat always explodes when a stream opens ("hi chat", "boa noite", everyone
+# arriving at once), which says nothing about the content. Chat heat used to
+# pick which stretches go to the model (analysis/hot_windows.py) counts for
+# only START_DAMP of its value during the first START_DAMP_SECONDS.
+START_DAMP_SECONDS = 240
+START_DAMP = 0.3
+
 
 @dataclass
 class ChatSignal:
     """curve: per second 0..1, how strongly chat marks a moment there (already
-    moved earlier for chat's lag). events: (second, "CHAT: ...") for the model."""
+    moved earlier for chat's lag). events: (second, "CHAT: ...") for the model.
+    ratio: per second, messages in the last few seconds over this chat's normal
+    rate (1.0 = normal), moved earlier for the lag like the curve; empty when
+    unknown. Hot-window selection reads it, with damp_start applied."""
     curve: np.ndarray
     events: list = field(default_factory=list)
     messages: int = 0
+    ratio: np.ndarray = field(default_factory=lambda: np.zeros(0, dtype=np.float32))
 
 
 _TOKEN = re.compile(r"[\w+':]+")
@@ -204,4 +215,17 @@ def chat_signal(messages: list, duration: float, classes: dict, lag: float = 6.0
             merged.append((*ev, ev[0]))
     merged.sort(key=lambda ev: -ev[2])
     events = sorted(((t, txt) for t, txt, _r, _last in merged[:MAX_EVENTS]), key=lambda ev: ev[0])
-    return ChatSignal(curve=curve, events=events, messages=len(messages))
+    lagged_ratio = np.ones(n, dtype=np.float32)
+    lagged_ratio[: n - shift] = ratio[shift:]
+    return ChatSignal(curve=curve, events=events, messages=len(messages), ratio=lagged_ratio)
+
+
+def damp_start(heat: np.ndarray, baseline: float = 0.0) -> np.ndarray:
+    """A copy of per-second chat heat with the stream's opening minutes turned
+    down: what rises above `baseline` (0 for a 0..1 curve, 1.0 for a rate
+    ratio) is multiplied by START_DAMP for the first START_DAMP_SECONDS."""
+    out = np.array(heat, dtype=np.float32, copy=True)
+    k = min(out.size, START_DAMP_SECONDS)
+    if k:
+        out[:k] = baseline + (out[:k] - baseline) * START_DAMP
+    return out

@@ -24,6 +24,7 @@ from pathlib import Path
 import numpy as np
 
 from analysis import highlights
+from analysis import hot_windows
 from analysis import intent as clip_intent
 from analysis.audio_features import extract_audio_features
 from analysis.visual_features import extract_visual_features, reaction_for_window
@@ -164,6 +165,18 @@ def find_clips(
               f"{len(voice_events)} voice jump(s)")
 
     # ---- 2. candidate pools ---------------------------------------------
+    # A long stream: the model reads only the hottest stretches (selection.hot_windows,
+    # analysis/hot_windows.py), not the whole transcript. None -> the whole transcript, as always;
+    # a match keeps reading everything.
+    hot = None
+    if sport is None:
+        try:
+            hot = hot_windows.plan(
+                segments, config, audio_raw=audio_raw, visual=visual_activity, audio=audio_excitement,
+                audience=audience, chat=chat, clips_asked=int(clips_cfg.get("max_clips_per_video", 0) or 0),
+                duration=max(segments[-1].end if segments else 0.0, float(audio_excitement.size)))
+        except Exception as e:  # a selection aid must never cost the run its candidates
+            print(f"  Hot-window selection skipped ({e}); reading the whole transcript")
     candidates, _ = highlights.find_highlights(
         segments, llm,
         min_score=0,  # fusion owns thresholding now
@@ -179,6 +192,7 @@ def find_clips(
         events=events,
         **({"guidance": guidance, "events_title": events_title} if gaming is not None else {}),
         **({"selection": 2} if selection == 2 else {}),
+        **({"hot": hot} if hot is not None else {}),
     )
 
     # Candidate windows from signal peaks — detected PER MODALITY, not just
