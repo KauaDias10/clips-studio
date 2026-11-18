@@ -22,11 +22,12 @@ class StartBody(BaseModel):
 
 
 ALLOWED_OPTIONS = {"pre_seconds", "post_seconds", "min_votes", "chat_bursts", "max_clips", "buffer_seconds",
-                   "height", "caption_style", "captions", "gaming", "gaming_layout"}
+                   "height", "caption_style", "captions", "gaming", "gaming_layout", "audio_peaks"}
 
 
 def install(app, *, config: dict, data_dir: Path, db, worker, broadcaster, accounts, session_secret: str):
-    from live.session import LiveSession, channel_name
+    from live.platforms import parse_target
+    from live.session import LiveSession
 
     sessions: dict[str, LiveSession] = {}
     lock = threading.Lock()
@@ -46,6 +47,25 @@ def install(app, *, config: dict, data_dir: Path, db, worker, broadcaster, accou
         worker.notify()
         return job
 
+    def youtube_credentials():
+        """Fresh credentials of the default connected YouTube account, for
+        reading a live's chat (read-only). None when none is connected."""
+        from server import youtube_service as service
+
+        d = db()
+        try:
+            channel_id = service.default_channel_id(d)
+        finally:
+            d.close()
+        return service.make_publisher(config, data_dir, channel_id=channel_id).credentials()
+
+    def has_youtube() -> bool:
+        try:
+            youtube_credentials()
+            return True
+        except Exception:
+            return False
+
     @app.get("/live")
     def live_status():
         with lock:
@@ -54,9 +74,10 @@ def install(app, *, config: dict, data_dir: Path, db, worker, broadcaster, accou
     @app.post("/live/start", dependencies=[Depends(require_session)])
     def live_start(body: StartBody):
         try:
-            name = channel_name(body.channel)
+            target = parse_target(body.channel)
         except ValueError as e:
             raise HTTPException(400, str(e)) from None
+        name = target.key
         options = {k: v for k, v in body.options.items() if k in ALLOWED_OPTIONS}
         with lock:
             old = sessions.get(name)
@@ -64,9 +85,10 @@ def install(app, *, config: dict, data_dir: Path, db, worker, broadcaster, accou
                 return old.status()
             from live.clip_job import forget_layout
 
-            forget_layout(name)
-            s = LiveSession(name, config, data_dir, queue_clip, accounts=accounts,
-                            publish=broadcaster.publish, options=options)
+            forget_layout(target.slug)
+            yt = youtube_credentials if target.platform == "youtube" and has_youtube() else None
+            s = LiveSession(target, config, data_dir, queue_clip, accounts=accounts,
+                            publish=broadcaster.publish, options=options, youtube_credentials=yt)
             sessions[name] = s
         s.start()
         return s.status()
@@ -74,7 +96,9 @@ def install(app, *, config: dict, data_dir: Path, db, worker, broadcaster, accou
     @app.post("/live/{channel}/stop", dependencies=[Depends(require_session)])
     def live_stop(channel: str):
         with lock:
-            s = sessions.get(channel.lower())
+            # "kick:xqc", or a bare Twitch name as before.
+            want = channel.lower()
+            s = next((v for k, v in sessions.items() if k.lower() in (want, f"twitch:{want}")), None)
         if s is None:
             raise HTTPException(404, "That channel isn't being clipped live.")
         s.stop()

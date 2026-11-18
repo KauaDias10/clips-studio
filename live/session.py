@@ -3,36 +3,38 @@
 from __future__ import annotations
 
 import json
-import re
 import threading
 import time
 from datetime import datetime, timezone
 from pathlib import Path
 
+from live.audio_peaks import AudioPeaks
 from live.chat import TwitchChat
 from live.group import group_for
+from live.other_chats import NoChat, YouTubeChat
+from live.platforms import Target, parse_target
 from live.moments import LOOKBACK, Moment, MomentDetector
 from live.recorder import Recorder
 
 TICK = 3.0
 CLIPS_POLL = 60.0
-_CHANNEL = re.compile(r"^[A-Za-z0-9_]{2,25}$")
 
 
 def channel_name(value: str) -> str:
     """'alanzoka', '#alanzoka' or 'https://www.twitch.tv/alanzoka' -> 'alanzoka'."""
-    v = (value or "").strip().rstrip("/")
-    m = re.search(r"twitch\.tv/([A-Za-z0-9_]+)", v)
-    v = (m.group(1) if m else v).lstrip("#@")
-    if not _CHANNEL.match(v):
+    t = parse_target(value)
+    if t.platform != "twitch":
         raise ValueError("Use a Twitch channel name or link, like twitch.tv/alanzoka.")
-    return v.lower()
+    return t.channel
 
 
 class LiveSession:
-    def __init__(self, channel: str, config: dict, data_dir: Path, queue_clip, *,
-                 accounts=None, publish=None, options: dict | None = None):
-        self.channel = channel_name(channel)
+    def __init__(self, channel: "str | Target", config: dict, data_dir: Path, queue_clip, *,
+                 accounts=None, publish=None, options: dict | None = None, youtube_credentials=None):
+        self.target = channel if isinstance(channel, Target) else parse_target(channel)
+        self.platform = self.target.platform
+        # Files, the live's video id and the layout cache go by this name.
+        self.channel = self.target.slug
         self.config = config
         self.data_dir = Path(data_dir)
         self.queue_clip = queue_clip          # (payload dict) -> job id
@@ -43,8 +45,16 @@ class LiveSession:
         self.started = time.time()
         # Every clip of this live goes into one video (live/group.py).
         self.group_id = group_for(self.data_dir, self.channel, self.started)
-        self.page_url = f"https://www.twitch.tv/{self.channel}"
-        self.chat = TwitchChat(self.channel)
+        self.page_url = self.target.page_url
+        if self.platform == "twitch":
+            self.chat = TwitchChat(self.target.channel)
+        elif self.platform == "youtube" and youtube_credentials is not None:
+            self.chat = YouTubeChat(lambda: self.recorder.video_id, youtube_credentials)
+        elif self.platform == "youtube":
+            self.chat = NoChat("Connect a YouTube account in Settings to read this live's chat.")
+        else:
+            self.chat = NoChat("Kick only gives its chat to apps with a public web address, so "
+                               "this live is clipped from its audio peaks.")
         self.recorder = Recorder(self.page_url, self.data_dir / "live" / self.channel / "buffer",
                                  keep_seconds=int(o.get("buffer_seconds", 600)),
                                  height=int(o.get("height", 720)))
@@ -53,6 +63,10 @@ class LiveSession:
                                        min_votes=int(o.get("min_votes", 3)),
                                        chat=bool(o.get("chat_bursts", True)))
         self.max_clips = int(o.get("max_clips", 40))
+        # Loud stretches of the stream itself: on unless asked otherwise where
+        # there is no chat to go by, off by default on Twitch.
+        self.audio = (AudioPeaks(pre=float(o.get("pre_seconds", 25)), post=float(o.get("post_seconds", 8)))
+                      if o.get("audio_peaks", self.platform != "twitch") else None)
         self.pending: list[Moment] = []
         self.log: list[dict] = []
         self.clips_queued = 0
@@ -66,7 +80,7 @@ class LiveSession:
         self.chat.start()
         self.recorder.start()
         threading.Thread(target=self._loop, name=f"live-{self.channel}", daemon=True).start()
-        self._note("started", f"Watching twitch.tv/{self.channel}")
+        self._note("started", f"Watching {self.target.label}")
 
     def stop(self) -> None:
         self._stop.set()
@@ -82,7 +96,12 @@ class LiveSession:
         now = time.time()
         recent = self.chat.since(now - 60)
         return {
-            "channel": self.channel,
+            "channel": self.target.channel,
+            "key": self.target.key,
+            "platform": self.platform,
+            "label": self.target.label,
+            "page_url": self.page_url,
+            "audio_peaks": self.audio is not None,
             "group_id": self.group_id,
             "running": self.running,
             "started": self.started,
@@ -96,7 +115,8 @@ class LiveSession:
             "pending": len(self.pending),
             "clips_queued": self.clips_queued,
             "max_clips": self.max_clips,
-            "viewer_clips": self.accounts is not None and bool(self._twitch_account()),
+            "viewer_clips": (self.platform == "twitch" and self.accounts is not None
+                             and bool(self._twitch_account())),
             "viewer_clips_error": self.clips_error,
             "log": self.log[-50:],
         }
@@ -120,6 +140,12 @@ class LiveSession:
         messages = [m for m in self.chat.since(now - LOOKBACK) if m[0] >= oldest - 30]
         for m in self.detector.read_chat(messages, now):
             self._found(m)
+        if self.audio is not None:
+            for seg in list(self.recorder.segments):
+                self.audio.feed(seg)
+            for m in self.audio.detect():
+                if self.detector.keep(m):
+                    self._found(m)
         if now - self._last_clips_poll >= CLIPS_POLL:
             self._last_clips_poll = now
             for m in self._viewer_clips():
@@ -159,7 +185,8 @@ class LiveSession:
         start, end = self.recorder.extract(m.start, m.end, source)
         m.extra["queued"] = True
         payload = {
-            "video_id": video_id, "group_id": self.group_id, "start": start, "end": end, "channel": self.channel,
+            "video_id": video_id, "group_id": self.group_id, "start": start, "end": end, "channel": self.target.channel,
+            "channel_key": self.channel, "platform": self.platform,
             "reason": m.reason, "kind": m.kind, "title": m.title,
             "stream_title": self.recorder.title, "at": m.at,
             "url": self.page_url, **({"clip_url": m.extra["url"]} if m.extra.get("url") else {}),
@@ -180,13 +207,15 @@ class LiveSession:
         return rows[0]["id"] if rows else None
 
     def _viewer_clips(self) -> list[Moment]:
+        if self.platform != "twitch":
+            return []             # viewer clips are read from Twitch only
         account = self._twitch_account() if self.accounts is not None else None
         if not account:
             return []
         since = max(self.started, self.recorder.segments[0].start) - 60
         try:
             data = self.accounts.perform(
-                account, "clips", broadcaster_login=self.channel, first=50,
+                account, "clips", broadcaster_login=self.target.channel, first=50,
                 started_at=datetime.fromtimestamp(since, timezone.utc).isoformat().replace("+00:00", "Z"))
             self.clips_error = ""
         except Exception as e:
@@ -211,4 +240,4 @@ class LiveSession:
         self.log.append(entry)
         self.log = self.log[-200:]
         print(f"[live {self.channel}] {event}: {text}")
-        self.publish({"type": "live", "channel": self.channel, "entry": json.loads(json.dumps(entry))})
+        self.publish({"type": "live", "channel": self.target.key, "entry": json.loads(json.dumps(entry))})

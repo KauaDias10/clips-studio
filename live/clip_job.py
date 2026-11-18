@@ -50,6 +50,8 @@ def run_live_clip(db, config: dict, payload: dict) -> None:
     vid = payload["video_id"]                 # this moment's seconds
     gid = payload.get("group_id") or vid      # the live's video they join (live/group.py)
     channel = payload.get("channel", "")
+    key = payload.get("channel_key") or channel          # live/group.py, the layout cache
+    platform = payload.get("platform", "twitch")
     source = data_dir / "downloads" / f"{vid}.mp4"
     if not source.exists():
         raise FileNotFoundError(f"Live seconds missing: {source}")
@@ -63,11 +65,9 @@ def run_live_clip(db, config: dict, payload: dict) -> None:
     stream_title = payload.get("stream_title") or f"{channel} ao vivo"
     duration = _probe_seconds(source)
     def save_video(video_id: str, seconds: float) -> None:
-        db.upsert_video(video_id, channel_id=f"twitch:{channel}", title=f"{stream_title} (ao vivo)",
+        db.upsert_video(video_id, channel_id=f"{platform}:{channel}", title=f"{stream_title} (ao vivo)",
                         channel_name=channel, duration=seconds)
 
-    if gid == vid:
-        save_video(vid, duration)
 
     start = max(0.0, float(payload.get("start", 0)))
     end = min(float(payload.get("end", duration)), duration or float(payload.get("end", 0)))
@@ -101,6 +101,32 @@ def run_live_clip(db, config: dict, payload: dict) -> None:
     if meta is None or not meta.title:
         meta = ClipMetadata(title=stream_title[:90], description=stream_title, hashtags=[])
 
+    owner = vid
+    if gid != vid:
+        # Into the live's one video first: its seconds and transcript go on
+        # the end of the live's, and the clip is made from there at the
+        # times it has there (so every clip of the live has its own times
+        # and file). Should that fail (the file held open too long), the
+        # clip stays a video of its own rather than lost.
+        from live.group import adopt, probe_seconds, touch
+
+        try:
+            offset = adopt(data_dir, gid, vid)
+            source = data_dir / "downloads" / f"{gid}.mp4"
+            candidate = dataclasses.replace(candidate, start=candidate.start + offset, end=candidate.end + offset)
+            segments = pipeline.transcribe(
+                source, gid, data_dir / "transcripts",
+                model_size=cfg["whisper"]["model"], device=cfg["whisper"]["device"],
+                language=None if forced == "auto" else forced,
+                online=pipeline.online_transcription(cfg),
+            )
+            touch(data_dir, key, gid)
+            owner = gid
+            duration = probe_seconds(source)
+        except Exception as e:
+            print(f"      Could not add the clip to the live's video ({e}); keeping it on its own")
+    save_video(owner, duration)
+
     opts: dict = {}
     if payload.get("caption_style"):
         opts["caption_style"] = payload["caption_style"]
@@ -109,20 +135,20 @@ def run_live_clip(db, config: dict, payload: dict) -> None:
         opts["title_text"] = meta.title
 
     clip_dir = (data_dir / "clips" / pipeline._safe_name(channel, "unknown-channel")
-                / f"ao vivo [{gid}]")
+                / f"ao vivo [{owner}]")
     if cfg["clips"].get("gaming"):
         # Gaming / Reaction: the webcam over the game, as for a video. Found
         # once per live (or the layout set up before starting), then reused;
         # each clip still follows scene changes (gaming/scenes.py).
-        g = _GAMING.get(channel)
+        g = _GAMING.get(key)
         if g is None:
             g = pipeline._gaming_prepare(source, [candidate], clip_dir, cfg) or {}
             if (g.get("gaming") or {}).get("cam") or (g.get("gaming") or {}).get("by") == "user":
-                _GAMING[channel] = g
+                _GAMING[key] = g
         opts.update(g)
     final_path, opts_json = pipeline._render_files(source, candidate, segments, clip_dir, cfg,
                                                    opts or None, lang)
-    if cfg["clips"].get("gaming") and channel not in _GAMING:
+    if cfg["clips"].get("gaming") and key not in _GAMING:
         # The webcam this clip found on its own, for the rest of the live.
         import json
 
@@ -131,22 +157,6 @@ def run_live_clip(db, config: dict, payload: dict) -> None:
         except ValueError:
             used = None
         if used:
-            _GAMING[channel] = {"gaming": {**(opts.get("gaming") or {}), "cam": used, "by": "video"}}
-    owner = vid
-    if gid != vid:
-        # Into the live's one video: its seconds, transcript and the clip at
-        # the times it now has there. Should that fail (the file held open
-        # too long), the clip stays a video of its own rather than lost.
-        from live.group import adopt, probe_seconds, touch
-
-        try:
-            offset = adopt(data_dir, gid, vid)
-            candidate = dataclasses.replace(candidate, start=candidate.start + offset, end=candidate.end + offset)
-            save_video(gid, probe_seconds(source.with_name(f"{gid}.mp4")))
-            touch(data_dir, channel, gid)
-            owner = gid
-        except Exception as e:
-            print(f"      Could not add the clip to the live's video ({e}); keeping it on its own")
-            save_video(vid, duration)
+            _GAMING[key] = {"gaming": {**(opts.get("gaming") or {}), "cam": used, "by": "video"}}
     pipeline._register_clip(db, owner, candidate, final_path, meta, opts_json, cfg)
     db.set_video_status(owner, "done")

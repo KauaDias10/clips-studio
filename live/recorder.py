@@ -33,20 +33,34 @@ class Segment:
     seconds: float = SEGMENT_SECONDS
 
 
-def stream_url(page_url: str, height: int = 720) -> tuple[str, str]:
-    """The live HLS address for a channel page, via yt-dlp (the one
-    dependency that keeps up with Twitch / Kick / YouTube changes)."""
-    import yt_dlp
+def stream_url(page_url: str, height: int = 720) -> tuple[list[str], str, str]:
+    """The live HLS address(es) for a channel page, via yt-dlp (the one
+    dependency that keeps up with Twitch / Kick / YouTube changes): one muxed
+    stream, or YouTube's video and audio apart. Also the stream's title and
+    the platform's id of the live."""
+    import re
 
-    fmt = f"best[height<={height}]/best"
-    with yt_dlp.YoutubeDL({"quiet": True, "no_warnings": True, "format": fmt}) as ydl:
-        info = ydl.extract_info(page_url, download=False)
+    from sources.ytdlp_common import extract_info
+
+    opts = {"quiet": True, "no_warnings": True,
+            "format": f"b[height<={height}]/bv*[height<={height}]+ba/b/bv*+ba"}
+    if "kick.com" in page_url:
+        from sources.kick import _impersonation
+
+        opts.update(_impersonation())
+    info = extract_info(page_url, opts)
     if not info.get("is_live", True):
         raise RuntimeError("This channel is not live right now.")
-    url = info.get("url") or (info.get("requested_formats") or [{}])[0].get("url")
-    if not url:
+    parts = info.get("requested_formats") or [info]
+    urls = [f.get("url") for f in parts if f.get("url")]
+    if not urls:
         raise RuntimeError("Could not find the live video address.")
-    return url, (info.get("description") or info.get("title") or "").strip()
+    if "twitch.tv" in page_url:
+        title = info.get("description") or info.get("title") or ""   # Twitch's title is the description
+    else:
+        # yt-dlp dates a live's title ("… 2026-11-18 14:02"): not part of it.
+        title = re.sub(r"\s+\d{4}-\d{2}-\d{2} \d{2}:\d{2}$", "", info.get("title") or "")
+    return urls, title.strip(), info.get("id") or ""
 
 
 class Recorder:
@@ -59,6 +73,7 @@ class Recorder:
         self.error = ""
         self.recording = False
         self.title = ""
+        self.video_id = ""   # the platform's id of the live (YouTube: its video)
         self._stop = threading.Event()
         self._lock = threading.Lock()
         self._proc: subprocess.Popen | None = None
@@ -92,14 +107,17 @@ class Recorder:
             wait = min(wait * 2, 60.0)
 
     def _record_once(self) -> None:
-        url, self.title = stream_url(self.page_url, self.height)
+        urls, self.title, self.video_id = stream_url(self.page_url, self.height)
         self._run_n += 1
         prefix = f"r{self._run_n}_"
         pattern = str(self.dir / f"{prefix}%06d.ts")
         cmd = [
             ffmpeg_path(), "-hide_banner", "-loglevel", "error", "-nostdin",
-            "-reconnect", "1", "-reconnect_streamed", "1", "-reconnect_delay_max", "10",
-            "-i", url, "-map", "0:v:0?", "-map", "0:a:0?", "-c", "copy",
+            # Each input reconnects on its own (input options go before each -i).
+            *[x for u in urls for x in ("-reconnect", "1", "-reconnect_streamed", "1",
+                                        "-reconnect_delay_max", "10", "-i", u)],
+            # One input with both, or YouTube's video (0) and audio (1) apart.
+            "-map", "0:v:0?", "-map", f"{len(urls) - 1}:a:0?", "-c", "copy",
             "-f", "segment", "-segment_time", str(SEGMENT_SECONDS), "-segment_format", "mpegts",
             "-reset_timestamps", "1", pattern,
         ]

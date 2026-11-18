@@ -7,13 +7,20 @@ export interface LiveLogEntry {
   type: 'started' | 'stopped' | 'moment' | 'queued' | 'skipped' | 'error'
   text: string
   at?: number
-  kind?: 'chat' | 'command' | 'viewer_clip'
+  kind?: 'chat' | 'command' | 'viewer_clip' | 'audio'
   job_id?: number
   video_id?: string
 }
 
 export interface LiveSessionStatus {
   channel: string
+  /** 'twitch:alanzoka', 'kick:xqc', 'youtube:@handle': what start/stop go by. */
+  key: string
+  platform: 'twitch' | 'kick' | 'youtube'
+  /** 'twitch.tv/alanzoka', 'kick.com/xqc', 'youtube.com/@handle' */
+  label: string
+  page_url: string
+  audio_peaks: boolean
   /** The one video every clip of this live goes into. */
   group_id: string
   running: boolean
@@ -38,6 +45,8 @@ export interface LiveOptions {
   post_seconds?: number
   min_votes?: number
   chat_bursts?: boolean
+  /** Clip loud stretches of the stream (default: on for Kick and YouTube). */
+  audio_peaks?: boolean
   max_clips?: number
   captions?: boolean
   caption_style?: CaptionStyle

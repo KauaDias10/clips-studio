@@ -399,5 +399,12 @@
   "Type the channel first: the layout is set up on the live itself": "Digite o canal primeiro: o layout é montado em cima da própria live",
   "Change layout…": "Trocar layout…",
   "Choose layout…": "Escolher layout…",
-  "Automatic": "Automático"
+  "Automatic": "Automático",
+  "Clips made while the stream is still live on Twitch, Kick or YouTube: when chat explodes, viewers type !clip, someone makes a Twitch clip, or the stream gets loud.": "Cortes feitos com a live ainda rolando, na Twitch, no Kick ou no YouTube: quando o chat explode, quando os viewers digitam !clip, quando alguém cria um clipe na Twitch ou quando a live fica barulhenta.",
+  "Live link": "Link da live",
+  "Moments from the stream itself: a few seconds far louder than usual (screams, hype). On by default for Kick and YouTube.": "Momentos tirados da própria live: alguns segundos bem mais altos que o normal (gritos, hype). Ligado por padrão no Kick e no YouTube.",
+  "Clip loud moments (audio)": "Cortar momentos barulhentos (áudio)",
+  "Use the channel's link (youtube.com/@…) to set the layout up on the live": "Use o link do canal (youtube.com/@…) para montar o layout em cima da live",
+  "Twitch: chat and video without logging in; viewers' clips need your Twitch account connected in Settings. YouTube: chat through the YouTube account connected in Settings. Kick: its chat can't be read by a desktop app, so Kick lives are clipped from their loud moments.": "Twitch: chat e vídeo sem login; os clipes dos viewers precisam da sua conta da Twitch conectada em Configurações. YouTube: o chat é lido pela conta do YouTube conectada em Configurações. Kick: o chat não pode ser lido por um app de computador, então as lives do Kick são cortadas pelos momentos barulhentos.",
+  "Loud moments": "Momentos barulhentos"
 }

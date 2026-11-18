@@ -120,6 +120,10 @@ class MomentDetector:
                               reason=text.replace("CHAT: ", "chat: "), strength=1.0))
         return out
 
+    def keep(self, m: Moment) -> bool:
+        """A moment found elsewhere (audio peaks): kept unless one is near."""
+        return self._keep(m)
+
     # ---- one clip per moment ----------------------------------------------
 
     def _keep(self, m: Moment, override: bool = False) -> bool:

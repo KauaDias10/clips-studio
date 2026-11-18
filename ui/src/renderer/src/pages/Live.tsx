@@ -46,12 +46,23 @@ function loadOptions(): LiveOptions {
   }
 }
 
-/** 'alanzoka' from what was typed, or '' (the layout needs the live's own frames). */
-function typedChannel(value: string): string {
+/** The live's page from what was typed (as live/platforms.py reads it), or
+ *  null: the layout is set up on the live's own frames. */
+function typedLive(value: string): { platform: 'twitch' | 'kick' | 'youtube'; page: string } | null {
   const v = value.trim().replace(/\/+$/, '')
-  const m = v.match(/twitch\.tv\/([A-Za-z0-9_]{2,25})$/i)
-  const name = (m ? m[1] : v).replace(/^[#@]/, '')
-  return /^[A-Za-z0-9_]{2,25}$/.test(name) ? name.toLowerCase() : ''
+  let m = v.match(/twitch\.tv\/([A-Za-z0-9_]{2,25})$/i)
+  if (m || /^[#@]?[A-Za-z0-9_]{2,25}$/.test(v)) {
+    const name = (m ? m[1] : v.replace(/^[#@]/, '')).toLowerCase()
+    return { platform: 'twitch', page: `https://www.twitch.tv/${name}` }
+  }
+  m = v.match(/kick\.com\/([A-Za-z0-9_-]{2,40})$/i)
+  if (m) return { platform: 'kick', page: `https://kick.com/${m[1].toLowerCase()}` }
+  m = v.match(/youtube\.com\/(@[A-Za-z0-9._-]+|channel\/UC[A-Za-z0-9_-]{22})(\/live)?$/i)
+  if (m) return { platform: 'youtube', page: `https://www.youtube.com/${m[1]}/live` }
+  // A YouTube live's own video link: it can be clipped, but its frames are
+  // only shown from the channel's /live page.
+  if (/youtu\.be\/|youtube\.com\/(watch|live\/)/i.test(v)) return { platform: 'youtube', page: '' }
+  return null
 }
 
 function clock(epoch: number): string {
@@ -139,7 +150,7 @@ function SessionCard({
   return (
     <section className="card space-y-3">
       <div className="flex items-center gap-3 flex-wrap">
-        <h2 className="font-semibold text-lg">twitch.tv/{session.channel}</h2>
+        <h2 className="font-semibold text-lg">{session.label}</h2>
         {session.stream_title && <span className="text-sm text-muted truncate max-w-md">{session.stream_title}</span>}
         <span className="flex-1" />
         {session.running ? (
@@ -153,10 +164,13 @@ function SessionCard({
       <div className="flex items-center gap-x-5 gap-y-2 flex-wrap">
         <Dot on={session.recording} label={t('Recording') + ` (${Math.round(session.buffered_seconds / 60)} min)`} />
         <Dot on={session.chat_connected} label={t('Chat') + ` (${session.chat_per_minute}/min)`} />
-        <Dot
-          on={session.viewer_clips && !session.viewer_clips_error}
-          label={session.viewer_clips ? t('Viewer clips') : t('Viewer clips: connect Twitch in Settings')}
-        />
+        {session.platform === 'twitch' && (
+          <Dot
+            on={session.viewer_clips && !session.viewer_clips_error}
+            label={session.viewer_clips ? t('Viewer clips') : t('Viewer clips: connect Twitch in Settings')}
+          />
+        )}
+        {session.audio_peaks && <Dot on={session.recording} label={t('Loud moments')} />}
         <span className="text-sm text-muted">
           {moments} {t('moments')} · {session.clips_queued}/{session.max_clips} {t('clips')}
           {session.pending > 0 && ` · ${session.pending} ${t('waiting for the seconds after')}`}
@@ -195,7 +209,8 @@ export default function Live({ onOpenInStudio }: { onOpenInStudio?: (videoId: st
   const [busy, setBusy] = useState(false)
   const [styleOpen, setStyleOpen] = useState(false)
   const [layoutOpen, setLayoutOpen] = useState(false)
-  const typed = typedChannel(channel)
+  const target = typedLive(channel)
+  const typed = target?.page ?? ''
   const style = { ...DEFAULT_CAPTION_STYLE, ...(options.caption_style ?? {}) } as Required<CaptionStyle>
   const setStyle = <K extends keyof CaptionStyle>(k: K, v: CaptionStyle[K]): void =>
     setOptions((prev) => {
@@ -268,7 +283,7 @@ export default function Live({ onOpenInStudio }: { onOpenInStudio?: (videoId: st
       <div className="flex items-baseline gap-3 flex-wrap">
         <h1 className="text-xl font-bold">{t('Live clipping')}</h1>
         <p className="text-sm text-muted">
-          {t('Clips made while the stream is still live: when chat explodes, viewers type !clip, or someone makes a Twitch clip.')}
+          {t('Clips made while the stream is still live on Twitch, Kick or YouTube: when chat explodes, viewers type !clip, someone makes a Twitch clip, or the stream gets loud.')}
         </p>
       </div>
 
@@ -276,11 +291,11 @@ export default function Live({ onOpenInStudio }: { onOpenInStudio?: (videoId: st
         <div className="flex gap-2 flex-wrap">
           <input
             className="input !w-80"
-            placeholder="twitch.tv/channel"
+            placeholder="twitch.tv/…, kick.com/… or youtube.com/@…"
             value={channel}
             onChange={(e) => setChannel(e.target.value)}
             onKeyDown={(e) => e.key === 'Enter' && channel.trim() && void start()}
-            aria-label={t('Twitch channel')}
+            aria-label={t('Live link')}
           />
           <button type="button" className="btn-accent" disabled={!channel.trim() || busy} onClick={() => void start()}>
             {busy ? t('Starting…') : t('Start clipping live')}
@@ -299,6 +314,18 @@ export default function Live({ onOpenInStudio }: { onOpenInStudio?: (videoId: st
               onChange={(e) => set({ chat_bursts: e.target.checked })}
             />
             {t('Clip when chat explodes')}
+          </label>
+          <label
+            className="flex items-center gap-2 text-sm cursor-pointer"
+            title={t('Moments from the stream itself: a few seconds far louder than usual (screams, hype). On by default for Kick and YouTube.')}
+          >
+            <input
+              type="checkbox"
+              className="size-4 accent-[#38BDF8]"
+              checked={options.audio_peaks ?? (target ? target.platform !== 'twitch' : false)}
+              onChange={(e) => set({ audio_peaks: e.target.checked })}
+            />
+            {t('Clip loud moments (audio)')}
           </label>
         </div>
         <div className="flex items-center gap-x-5 gap-y-2 flex-wrap border-t border-raised/60 pt-3">
@@ -339,7 +366,13 @@ export default function Live({ onOpenInStudio }: { onOpenInStudio?: (videoId: st
                 type="button"
                 className="btn-ghost !py-1"
                 disabled={!typed}
-                title={!typed ? t('Type the channel first: the layout is set up on the live itself') : undefined}
+                title={
+                  !typed
+                    ? target?.platform === 'youtube'
+                      ? t("Use the channel's link (youtube.com/@…) to set the layout up on the live")
+                      : t('Type the channel first: the layout is set up on the live itself')
+                    : undefined
+                }
                 onClick={() => setLayoutOpen(true)}
               >
                 {layout ? t('Change layout…') : t('Choose layout…')}
@@ -359,7 +392,7 @@ export default function Live({ onOpenInStudio }: { onOpenInStudio?: (videoId: st
         )}
         {layoutOpen && typed && (
           <GamingLayoutEditor
-            source={{ url: `https://www.twitch.tv/${typed}` }}
+            source={{ url: typed }}
             context="video"
             settings={layout ?? {}}
             remember={false}
@@ -372,7 +405,7 @@ export default function Live({ onOpenInStudio }: { onOpenInStudio?: (videoId: st
           />
         )}
         <p className="text-xs text-muted">
-          {t('Chat and the video are read without logging in. Clips viewers make on Twitch need your Twitch account connected in Settings.')}
+          {t("Twitch: chat and video without logging in; viewers' clips need your Twitch account connected in Settings. YouTube: chat through the YouTube account connected in Settings. Kick: its chat can't be read by a desktop app, so Kick lives are clipped from their loud moments.")}
         </p>
         {error && <p className="text-sm text-error">{error}</p>}
       </section>
@@ -382,10 +415,10 @@ export default function Live({ onOpenInStudio }: { onOpenInStudio?: (videoId: st
         .sort((a, b) => Number(b.running) - Number(a.running) || b.started - a.started)
         .map((s) => (
           <SessionCard
-            key={s.channel}
+            key={s.key}
             session={s}
             onOpen={onOpenInStudio}
-            onStop={() => void live.stop(s.channel).then(refresh).catch((e) => setError(String(e)))}
+            onStop={() => void live.stop(s.key).then(refresh).catch((e) => setError(String(e)))}
           />
         ))}
     </div>
