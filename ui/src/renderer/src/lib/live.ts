@@ -14,6 +14,8 @@ export interface LiveLogEntry {
 
 export interface LiveSessionStatus {
   channel: string
+  /** The one video every clip of this live goes into. */
+  group_id: string
   running: boolean
   started: number
   recording: boolean

@@ -67,57 +67,60 @@ function Dot({ on, label }: { on: boolean; label: string }): JSX.Element {
   )
 }
 
-/** Clips made from this session's moments, as their jobs finish. */
+/** Clips made from this session's moments, as their jobs finish: all of
+ *  them in the live's one video (live/group.py), newest first, and a
+ *  placeholder for each one still rendering. */
 function LiveClips({ session, onOpen }: { session: LiveSessionStatus; onOpen?: (videoId: string) => void }): JSX.Element | null {
-  const ids = session.log.filter((e) => e.type === 'queued' && e.video_id).map((e) => e.video_id as string)
-  const [clips, setClips] = useState<Record<string, Clip | null>>({})
-  const key = ids.join(',')
+  const queued = session.log.filter((e) => e.type === 'queued').length
+  const [clips, setClips] = useState<Clip[]>([])
   useEffect(() => {
     let gone = false
-    void Promise.all(
-      ids.map((id) => api.clips(id).then((rows) => [id, rows[0] ?? null] as const).catch(() => [id, null] as const))
-    ).then((rows) => {
-      if (!gone) setClips(Object.fromEntries(rows))
-    })
+    if (!session.group_id) return
+    api
+      .clips(session.group_id)
+      .then((rows) => {
+        if (!gone) setClips(rows)
+      })
+      .catch(() => undefined)
     return () => {
       gone = true
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [key, session.log.length])
-  if (!ids.length) return null
+  }, [session.group_id, session.log.length])
+  const rendering = Math.max(0, Math.min(queued, session.clips_queued) - clips.length)
+  if (!clips.length && !rendering) return null
+  const open = (): void => onOpen?.(session.group_id)
   return (
     <div className="space-y-2">
-      <h3 className="font-semibold text-sm">{t('Clips from this live')}</h3>
+      <h3 className="font-semibold text-sm">
+        {t('Clips from this live')} ({clips.length})
+      </h3>
       <div className="grid grid-cols-[repeat(auto-fill,minmax(150px,1fr))] gap-3">
-        {ids
+        {Array.from({ length: rendering }, (_, i) => (
+          <div key={`r${i}`} className="card !p-2 space-y-1 opacity-60">
+            <div className="w-full aspect-[9/16] rounded bg-black/40 flex items-center justify-center text-xs text-muted">
+              {t('Rendering…')}
+            </div>
+          </div>
+        ))}
+        {clips
           .slice()
-          .reverse()
-          .map((id) => {
-            const clip = clips[id]
-            return (
-              <button
-                key={id}
-                type="button"
-                className="card !p-2 text-left space-y-1 hover:border-accent disabled:opacity-60"
-                disabled={!clip}
-                onClick={() => onOpen?.(id)}
-              >
-                {clip ? (
-                  <video
-                    src={api.mediaUrl(clip.id)}
-                    className="w-full aspect-[9/16] rounded bg-black object-cover"
-                    muted
-                    preload="metadata"
-                  />
-                ) : (
-                  <div className="w-full aspect-[9/16] rounded bg-black/40 flex items-center justify-center text-xs text-muted">
-                    {t('Rendering…')}
-                  </div>
-                )}
-                <p className="text-xs line-clamp-2">{clip?.title || id}</p>
-              </button>
-            )
-          })}
+          .sort((x, y) => y.id - x.id)
+          .map((clip) => (
+            <button
+              key={clip.id}
+              type="button"
+              className="card !p-2 text-left space-y-1 hover:border-accent"
+              onClick={open}
+            >
+              <video
+                src={api.mediaUrl(clip.id)}
+                className="w-full aspect-[9/16] rounded bg-black object-cover"
+                muted
+                preload="metadata"
+              />
+              <p className="text-xs line-clamp-2">{clip.title}</p>
+            </button>
+          ))}
       </div>
     </div>
   )

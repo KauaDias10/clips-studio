@@ -10,6 +10,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from live.chat import TwitchChat
+from live.group import group_for
 from live.moments import LOOKBACK, Moment, MomentDetector
 from live.recorder import Recorder
 
@@ -40,6 +41,8 @@ class LiveSession:
         o = options or {}
         self.options = o
         self.started = time.time()
+        # Every clip of this live goes into one video (live/group.py).
+        self.group_id = group_for(self.data_dir, self.channel, self.started)
         self.page_url = f"https://www.twitch.tv/{self.channel}"
         self.chat = TwitchChat(self.channel)
         self.recorder = Recorder(self.page_url, self.data_dir / "live" / self.channel / "buffer",
@@ -80,6 +83,7 @@ class LiveSession:
         recent = self.chat.since(now - 60)
         return {
             "channel": self.channel,
+            "group_id": self.group_id,
             "running": self.running,
             "started": self.started,
             "recording": self.recorder.recording,
@@ -150,12 +154,12 @@ class LiveSession:
 
     def _queue(self, m: Moment) -> None:
         stamp = datetime.fromtimestamp(m.at).strftime("%Y%m%d_%H%M%S")
-        video_id = f"live_{self.channel}_{stamp}"
+        video_id = f"livecut_{self.channel}_{stamp}"   # this moment's seconds, until adopted
         source = self.data_dir / "downloads" / f"{video_id}.mp4"
         start, end = self.recorder.extract(m.start, m.end, source)
         m.extra["queued"] = True
         payload = {
-            "video_id": video_id, "start": start, "end": end, "channel": self.channel,
+            "video_id": video_id, "group_id": self.group_id, "start": start, "end": end, "channel": self.channel,
             "reason": m.reason, "kind": m.kind, "title": m.title,
             "stream_title": self.recorder.title, "at": m.at,
             "url": self.page_url, **({"clip_url": m.extra["url"]} if m.extra.get("url") else {}),
@@ -164,7 +168,7 @@ class LiveSession:
         }
         job = self.queue_clip(payload)
         self.clips_queued += 1
-        self._note("queued", m.reason, at=m.at, kind=m.kind, job_id=job, video_id=video_id)
+        self._note("queued", m.reason, at=m.at, kind=m.kind, job_id=job, video_id=self.group_id)
 
     # ---- clips viewers made on Twitch ---------------------------------------
 
