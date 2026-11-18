@@ -76,9 +76,17 @@ rem Modelos extras: TalkNet (acha a webcam), vozes da legenda, sons e o QuickJS 
 ".venv\Scripts\python.exe" scripts\fetch_voice_model.py
 ".venv\Scripts\python.exe" scripts\fetch_panns.py
 ".venv\Scripts\python.exe" scripts\fetch_quickjs.py
+rem O download do Electron fica com o reparar_instalacao.py: o passo de
+rem pos-instalacao do proprio Electron pode terminar calado com Node novo e
+rem deixar o app sem abrir ("Electron uninstall").
+set "ELECTRON_SKIP_BINARY_DOWNLOAD=1"
 pushd ui
 call npm install || (popd & goto :fail)
 popd
+set "ELECTRON_SKIP_BINARY_DOWNLOAD="
+echo.
+echo Conferindo a instalacao (Electron e bibliotecas Python)...
+".venv\Scripts\python.exe" scripts\reparar_instalacao.py || goto :fail
 
 rem ---- 6. Modelo de IA ------------------------------------------------------
 echo.
