@@ -28,7 +28,8 @@ chat_classes:
             LETSGOOO, INSANE, insane, HOW, HOLY, CLUTCH, clutch, W, WW, GIGACHAD, EZ, Clap,
             GG, gg, Kreygasm, SeemsGood, CurseLit, PopNemo, WOW, wow, OMG, omg, "no way",
             "let's go", "lets go", "what a", "holy shit", "oh my god", "すご", "すげ", "神",
-            "대박", "牛逼", "太强", "brutal", "increible", "incrível", "🔥", "😱", "🤯", "🐐", "👏",
+            "대박", "牛逼", "太强", "brutal", "increible", "incrível", caralho, CARALHO, mds, MDS,
+            "que isso", "QUE ISSO", absurdo, ABSURDO, "🔥", "😱", "🤯", "🐐", "👏",
             "💪", "🏆"]
     suffixes: [Pog, POG, Hype, HYPE, Clap, GG, Win, WIN, W, Cheer, Fire, Goat, GOAT, Wow, WOW]
     patterns: ["^6{3,}$", "^(gg)+$"]
@@ -61,6 +62,7 @@ chat_classes:
   clip:
     label: asking to clip it
     words: [CLIP, clip, clipped, clipit, "+2", "clip it", "clip that", "someone clip", "clipping",
+            CLIPA, clipa, clipaa, CLIPAA, clipe, CLIPE, clipou, "clipa isso", "alguem clipa",
             "クリップ", "클립"]
 
 # Messages that are only these (hellos, good lucks, goodbyes) aren't reactions

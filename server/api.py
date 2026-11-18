@@ -890,6 +890,12 @@ def create_app(config: dict, settings_path: Path) -> FastAPI:
         db=db,
     )
     account_runtime.workflow = stream_workflow
+    # Live clipping (live/): clips made while a channel is live, from its chat,
+    # !clip and the clips its viewers make.
+    from server import live_api
+
+    live_api.install(app, config=config, data_dir=data_dir, db=db, worker=worker,
+                     broadcaster=broadcaster, accounts=account_service, session_secret=desktop_session)
     connected_feed.mapped_broadcaster = stream_workflow.mapped_broadcaster
     account_runtime.events.add_sink(stream_workflow.record_event)
     account_runtime.gateway = plugin_accounts.install(

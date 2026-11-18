@@ -19,6 +19,7 @@ export function jobLabel(job: QueueJob): string {
   if (job.display_title) return job.display_title
   if (job.type === 'render') return 'Re-rendering a clip'
   if (job.type === 'translate') return 'Subtitles & dubbing'
+  if (job.type === 'live_clip') return 'Live clip'
   if (!job.url) return `Job ${job.id}`
   if (job.url.startsWith('local:')) return 'Local video file'
   try {

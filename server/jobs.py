@@ -302,6 +302,11 @@ class Worker(threading.Thread):
                     self._rerender_clip(db, payload)
                 elif job["type"] == "translate":
                     self._translate_clips(db, payload)
+                elif job["type"] == "live_clip":
+                    # A moment cut from a live stream (live/): one clip.
+                    from live.clip_job import run_live_clip
+
+                    run_live_clip(db, self.config, payload)
                 else:
                     raise ValueError(f"Unknown job type {job['type']!r}")
                 db.finish_job(job["id"], "done")
