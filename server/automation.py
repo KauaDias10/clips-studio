@@ -37,6 +37,12 @@ from core.state import StateDB
 ENABLED_KEY = "automation_enabled"
 DELETE_SOURCES_KEY = "automation_delete_sources"
 
+TOPICS_KEY = "topic_watches"
+TOPIC_SEEN_KEY = "topic_watch_seen"
+# How many video ids a topic watch remembers having queued. Plenty for years of
+# daily runs; capped so the saved value cannot grow without bound.
+TOPIC_SEEN_KEEP = 2000
+
 PLATFORM_NAMES = {"youtube": "YouTube", "twitch": "Twitch", "twitch_clips": "Twitch", "kick": "Kick"}
 
 WATCH_TICK_SECONDS = 30
@@ -156,11 +162,97 @@ class WatchPatch(BaseModel):
     min_minutes: float | None = Field(default=None, ge=0, le=600)
 
 
+class TopicIn(BaseModel):
+    query: str = Field(min_length=1, max_length=200)
+    platforms: list[Literal["youtube", "twitch", "kick"]] = ["youtube"]
+    # How many of the day's biggest finished lives to queue each day.
+    per_day: int = Field(default=3, ge=1, le=10)
+    clips_per_video: int | None = Field(default=None, ge=1, le=50)
+    # Local hour (0-23) after which the daily look happens; None is any time.
+    run_hour: int | None = Field(default=None, ge=0, le=23)
+    min_minutes: float = Field(default=30, ge=0, le=600)
+    enabled: bool = True
+    preset: str | None = None
+    options: dict | None = None
+
+
+class TopicPatch(BaseModel):
+    query: str | None = Field(default=None, min_length=1, max_length=200)
+    platforms: list[Literal["youtube", "twitch", "kick"]] | None = None
+    per_day: int | None = Field(default=None, ge=1, le=10)
+    clips_per_video: int | None = Field(default=None, ge=1, le=50)
+    run_hour: int | None = Field(default=None, ge=0, le=23)
+    min_minutes: float | None = Field(default=None, ge=0, le=600)
+    enabled: bool | None = None
+    preset: str | None = None
+    options: dict | None = None
+
+
 # ---- reading state ----------------------------------------------------------
 
 
 def is_enabled(d: StateDB) -> bool:
     return d.get_flag(ENABLED_KEY, "0") == "1"
+
+
+# ---- topic watches ----------------------------------------------------------
+#
+# "Clip today's biggest finished streams about X." Unlike a channel watch there
+# is no channel to poll, so these are a short list saved as one JSON value in
+# app_state (like the other automation settings) rather than a table, and the
+# videos they queue are tracked by the queue itself plus a remembered set of
+# ids, so a stream is never queued twice, by one topic or two.
+
+
+def load_topics(d: StateDB) -> list[dict]:
+    try:
+        topics = json.loads(d.get_flag(TOPICS_KEY, "[]"))
+    except (TypeError, ValueError):
+        return []
+    return [t for t in topics if isinstance(t, dict) and t.get("id")] if isinstance(topics, list) else []
+
+
+def save_topics(d: StateDB, topics: list[dict]) -> None:
+    d.set_flag(TOPICS_KEY, json.dumps(topics))
+
+
+def _topic_seen(d: StateDB) -> dict[str, float]:
+    try:
+        seen = json.loads(d.get_flag(TOPIC_SEEN_KEY, "{}"))
+    except (TypeError, ValueError):
+        return {}
+    return seen if isinstance(seen, dict) else {}
+
+
+def _remember_topic_seen(d: StateDB, seen: dict[str, float]) -> None:
+    if len(seen) > TOPIC_SEEN_KEEP:
+        newest = sorted(seen.items(), key=lambda kv: kv[1], reverse=True)[:TOPIC_SEEN_KEEP]
+        seen = dict(newest)
+    d.set_flag(TOPIC_SEEN_KEY, json.dumps(seen))
+
+
+def topic_due(topic: dict, now: float) -> bool:
+    """Whether this topic's daily look is owed: once per local day, and not
+    before its run hour. A look that found the queue full tries again later
+    the same day rather than waiting for tomorrow."""
+    if not topic.get("enabled", True):
+        return False
+    if now < float(topic.get("retry_at") or 0):
+        return False
+    local = datetime.fromtimestamp(now)
+    if topic.get("last_run_day") == local.strftime("%Y-%m-%d"):
+        return False
+    hour = topic.get("run_hour")
+    return hour is None or local.hour >= int(hour)
+
+
+def topic_payload(topic: dict, url: str) -> dict:
+    """The job payload for one video a topic found: the topic's preset and
+    options on top, and its clip cap, the same way a channel watch builds it."""
+    options = dict(topic.get("options") or {})
+    if topic.get("clips_per_video"):
+        options["max_clips"] = int(topic["clips_per_video"])
+    return job_payload({"options": json.dumps(options)}, url)
 
 
 def publish_settings(watch) -> PublishSettings:
@@ -550,8 +642,10 @@ class ChannelWatcher(threading.Thread):
         downloads=None,
         clock=time.time,
         texts=None,
+        discover=None,
     ):
         super().__init__(daemon=True, name="channel-watcher")
+        self._discover = discover
         self._downloads = downloads
         self._db = db
         self._feed = feed
@@ -637,6 +731,7 @@ class ChannelWatcher(threading.Thread):
                 return
             for watch in d.watches_due(now):
                 self._poll(d, watch, now)
+            self._run_topics(d, now)
             self._check_readiness(d, now)
             self._queue_waiting(d)
             self._retry_failed_runs(d, now)
@@ -652,6 +747,73 @@ class ChannelWatcher(threading.Thread):
                 except Exception:
                     print('Clip updates could not refresh.')
             d.close()
+
+    def _run_topics(self, d: StateDB, now: float) -> None:
+        for topic in load_topics(d):
+            if topic_due(topic, now):
+                try:
+                    self.run_topic(d, topic["id"], now)
+                except Exception as e:
+                    traceback.print_exc()  # one topic must not stop the others
+                    self._save_topic(d, topic["id"], last_error=_short(e),
+                                     retry_at=now + RECHECK_SECONDS)
+
+    def _save_topic(self, d: StateDB, topic_id: str, **fields) -> None:
+        topics = load_topics(d)
+        for topic in topics:
+            if topic["id"] == topic_id:
+                topic.update(fields)
+        save_topics(d, topics)
+
+    def run_topic(self, d: StateDB, topic_id: str, now: float | None = None) -> dict:
+        """Look for this topic's biggest finished lives and queue the ones not
+        seen before, up to its per-day count. Returns what happened."""
+        now = self._clock() if now is None else now
+        topic = next((t for t in load_topics(d) if t["id"] == topic_id), None)
+        if topic is None:
+            return {"queued": 0, "found": 0}
+        discover = self._discover
+        if discover is None:
+            from sources.live_discovery import find_top_lives as discover
+        from sources.dispatch import identify
+
+        per_day = int(topic.get("per_day") or 1)
+        with self._busy(f"Looking for streams about {topic['query']}"):
+            # Ask for more than will be queued: some of the biggest were
+            # queued on an earlier day.
+            lives = discover(
+                topic["query"], limit=min(25, per_day * 3),
+                platforms=tuple(topic.get("platforms") or ("youtube",)),
+                max_age_hours=24, min_duration_minutes=float(topic.get("min_minutes") or 30),
+            )
+        seen = _topic_seen(d)
+        queued, full = 0, False
+        for live in lives:
+            if queued >= per_day:
+                break
+            _, video_id = identify(live.url)
+            if not video_id or video_id in seen:
+                continue
+            outcome, job_id = queue.enqueue_once(
+                d, video_id, topic_payload(topic, live.url), title=live.title or topic["query"])
+            if outcome == "full":
+                full = True
+                break  # nothing else fits either; try again later today
+            seen[video_id] = now
+            if outcome == "queued":
+                queue.start_if_alone(d, job_id)
+                queued += 1
+                self._say(f"Queued {_quoted(live.title or live.url)} ({topic['query']})", "queued", live.url)
+        _remember_topic_seen(d, seen)
+        today = datetime.fromtimestamp(now).strftime("%Y-%m-%d")
+        self._save_topic(
+            d, topic_id, last_run_at=now, last_found=len(lives), last_queued=queued, last_error="",
+            last_run_day="" if full else today, retry_at=now + RECHECK_SECONDS if full else 0)
+        if queued:
+            self._worker.notify()
+            self._broadcaster.publish({"type": "queue"})
+        self._broadcaster.publish({"type": "automation"})
+        return {"queued": queued, "found": len(lives)}
 
     def _attach_discord_links(self, d: StateDB, now: float) -> None:
         """Recover attachments from saved posts, including interrupted publishes."""
@@ -1263,6 +1425,7 @@ def install(
     publisher=None,
     clock=time.time,
     texts=None,
+    discover=None,
 ) -> ChannelWatcher:
     """Add the automation routes to `app`. Returns the watcher for the caller
     to start and stop with the rest of the server.
@@ -1281,7 +1444,7 @@ def install(
 
     watcher = ChannelWatcher(
         db, feed=feed, worker=worker, broadcaster=broadcaster, publisher=publisher,
-        interval_minutes=interval_minutes, clock=clock, texts=texts,
+        interval_minutes=interval_minutes, clock=clock, texts=texts, discover=discover,
         downloads=Path(data_dir) / "downloads" if data_dir is not None else None,
     )
 
@@ -1395,6 +1558,116 @@ def install(
             return {"times": times, "already_scheduled": len(woop.committed_times(d))}
         except PublishError as e:
             raise HTTPException(400, e.message) from e
+        finally:
+            d.close()
+
+    # ---- topic watches and one-off discovery ----
+
+    def find_lives(query, limit, platforms, min_minutes=30):
+        from sources import live_discovery
+
+        return (discover or live_discovery.find_top_lives)(
+            query, limit=limit, platforms=tuple(platforms), min_duration_minutes=min_minutes)
+
+    @app.get("/discover/lives")
+    def discover_lives(query: str, limit: int = 7, platform: str = "youtube", min_minutes: float = 30):
+        # A plain def: yt-dlp blocks, and FastAPI runs these off the event loop.
+        try:
+            lives = find_lives(query, max(1, min(limit, 25)), [platform], min_minutes)
+        except ValueError as e:
+            raise HTTPException(400, str(e)) from e
+        return [vars(live) for live in lives]
+
+    def topic_options(preset, raw, base=None):
+        options = dict(base or {})
+        if raw is not None:
+            options = options_from(raw)
+        chosen = preset or options.get("preset") or "standard"
+        if chosen not in PRESETS:
+            raise HTTPException(400, f"unknown preset '{chosen}'")
+        options["preset"] = chosen
+        return options
+
+    def load_topic(d: StateDB, topic_id: str) -> dict:
+        topic = next((t for t in load_topics(d) if t["id"] == topic_id), None)
+        if topic is None:
+            raise HTTPException(404, "no such topic")
+        return topic
+
+    @app.get("/automation/topics")
+    def list_topics():
+        d = db()
+        try:
+            return load_topics(d)
+        finally:
+            d.close()
+
+    @app.post("/automation/topics")
+    def add_topic(body: TopicIn):
+        import uuid
+
+        if any(p != "youtube" for p in body.platforms):
+            raise HTTPException(400, "Only YouTube is supported for finding top streams.")
+        d = db()
+        try:
+            topics = load_topics(d)
+            topic = {
+                "id": uuid.uuid4().hex[:10], "query": body.query.strip(),
+                "platforms": body.platforms, "per_day": body.per_day,
+                "clips_per_video": body.clips_per_video, "run_hour": body.run_hour,
+                "min_minutes": body.min_minutes, "enabled": body.enabled,
+                "options": topic_options(body.preset, body.options),
+                "created_at": clock(), "last_run_day": "", "retry_at": 0,
+            }
+            topics.append(topic)
+            save_topics(d, topics)
+        finally:
+            d.close()
+        watcher.wake()
+        broadcaster.publish({"type": "automation"})
+        return topic
+
+    @app.patch("/automation/topics/{topic_id}")
+    def patch_topic(topic_id: str, body: TopicPatch):
+        d = db()
+        try:
+            topic = load_topic(d, topic_id)
+            fields = body.model_dump(exclude_unset=True, exclude={"preset", "options"})
+            if any(p != "youtube" for p in fields.get("platforms") or []):
+                raise HTTPException(400, "Only YouTube is supported for finding top streams.")
+            if body.options is not None or body.preset is not None:
+                fields["options"] = topic_options(body.preset, body.options, topic.get("options"))
+            topics = load_topics(d)
+            for t in topics:
+                if t["id"] == topic_id:
+                    # Clearing the clip cap or the run hour is a real choice (null).
+                    t.update({k: v for k, v in fields.items()
+                              if v is not None or k in ("clips_per_video", "run_hour")})
+                    topic = t
+            save_topics(d, topics)
+        finally:
+            d.close()
+        watcher.wake()
+        broadcaster.publish({"type": "automation"})
+        return topic
+
+    @app.delete("/automation/topics/{topic_id}")
+    def delete_topic(topic_id: str):
+        d = db()
+        try:
+            load_topic(d, topic_id)
+            save_topics(d, [t for t in load_topics(d) if t["id"] != topic_id])
+        finally:
+            d.close()
+        broadcaster.publish({"type": "automation"})
+        return {"deleted": True}
+
+    @app.post("/automation/topics/{topic_id}/run")
+    def run_topic_now(topic_id: str):
+        d = db()
+        try:
+            load_topic(d, topic_id)
+            return watcher.run_topic(d, topic_id)
         finally:
             d.close()
 

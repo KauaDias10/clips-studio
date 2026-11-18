@@ -381,6 +381,33 @@ def _job_status(args: dict) -> str:
     return line
 
 
+def _find_top_lives(args: dict) -> str:
+    from urllib.parse import quote
+
+    query = str(args["query"]).strip()
+    limit = int(args.get("limit") or 7)
+    minutes = args.get("min_minutes")
+    path = f"/discover/lives?query={quote(query)}&limit={limit}"
+    if minutes is not None:
+        path += f"&min_minutes={float(minutes)}"
+    # Several yt-dlp lookups in a row: far slower than the other reads.
+    lives = _request("GET", path, timeout=240.0)
+    if not lives:
+        return (
+            f"No finished livestreams about {query!r} from the last day matched. "
+            "Try a broader query or a lower min_minutes."
+        )
+    lines = [f"{len(lives)} finished livestream(s) about {query!r}, most viewed first:"]
+    for live in lives:
+        minutes_long = round((live.get("duration_s") or 0) / 60)
+        lines.append(
+            f"- {live.get('title') or '?'} | {live.get('channel') or '?'} | "
+            f"{live.get('view_count', 0):,} views | {minutes_long} min | {live['url']}"
+        )
+    lines.append("Pass any url to queue_video to clip it.")
+    return "\n".join(lines)
+
+
 def _queue_status(_args: dict) -> str:
     queue = _request("GET", "/queue")
     counts = {k: len(queue.get(k) or []) for k in ("processing", "queued", "completed", "failed")}
@@ -1095,6 +1122,30 @@ TOOLS: list[dict] = [
             "required": ["url"],
         },
         "handler": _queue_video,
+    },
+    {
+        "name": "find_top_lives",
+        "title": "Find the biggest finished livestreams on a topic",
+        "description": (
+            "Search YouTube for the most-viewed livestreams about a game or topic that "
+            "already ended in the last day (not live, not upcoming, public, long enough "
+            "to clip). Returns links ranked by views; clip one with queue_video. "
+            "YouTube only: Twitch and Kick cannot be searched by category. Takes up to "
+            "a minute because each candidate is checked."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "query": {"type": "string", "description": "A game or topic, such as 'Elden Ring'"},
+                "limit": {"type": "integer", "description": "How many to return, 1-25. Default 7"},
+                "min_minutes": {
+                    "type": "number",
+                    "description": "Skip streams shorter than this. Default 30",
+                },
+            },
+            "required": ["query"],
+        },
+        "handler": _find_top_lives,
     },
     {
         "name": "queue_local_file",

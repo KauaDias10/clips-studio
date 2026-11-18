@@ -1403,6 +1403,37 @@ Returns 409 until the clips exist.
 
 Set aside a video that hasn't been queued yet, or decline an `ask`.
 
+## Topic watches: today's biggest streams
+
+Find the most viewed streams on a topic (a game, an event) that finished in the
+last day, and clip them without anyone pasting a link. YouTube only: Twitch and
+Kick have no category listing that can be read. Streams still on air, upcoming,
+age-restricted or members-only are skipped.
+
+### `GET /discover/lives?query=GTA%206&limit=7&min_minutes=30`
+
+A one-off search. Returns a list of `{url, title, channel, platform,
+duration_s, view_count, started_at}`, most viewed first. Pass a `url` to
+`POST /jobs` to clip it. Takes a minute or two: each finalist is looked up.
+
+### `GET /automation/topics` · `POST /automation/topics`
+
+```json
+{"query": "GTA 6", "per_day": 3, "clips_per_video": 5, "run_hour": 22,
+ "min_minutes": 30, "enabled": true, "options": {"gaming": true}}
+```
+
+Once a day (after `run_hour`, local time, when set), with automation switched
+on (`PATCH /automation`), the watch searches and queues up to `per_day`
+(1-10) streams it has not queued before. A stream is never queued twice, by
+any topic. `clips_per_video` becomes the job's `max_clips`.
+
+### `PATCH /automation/topics/{id}` · `DELETE /automation/topics/{id}` · `POST /automation/topics/{id}/run`
+
+`run` searches and queues now, returning `{queued, found}`.
+
+The MCP server has the same search as the `find_top_lives` tool.
+
 ## Plugins
 
 **Experimental.** Community pipelines: plugins that find a video's moments,
