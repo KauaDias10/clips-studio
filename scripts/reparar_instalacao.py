@@ -15,7 +15,10 @@ Dois defeitos ja aconteceram de verdade num PC e deixavam o app sem abrir:
 
 So usa a biblioteca padrao, para rodar mesmo com a .venv quebrada.
 
-Uso:  python scripts/reparar_instalacao.py [--so-electron | --so-python]
+E, antes de instalar, confere se o caminho da pasta cabe no limite de 260
+letras do Windows (--checar-pasta): o torch tem arquivos muito fundos.
+
+Uso:  python scripts/reparar_instalacao.py [--so-electron | --so-python | --checar-pasta]
 Sai com codigo 0 quando tudo esta certo (ou foi consertado), 1 se nao deu.
 """
 
@@ -192,7 +195,43 @@ def reparar_python() -> bool:
     return True
 
 
+# ---------------------------------------------------------------- caminho
+# O torch instala um arquivo de licenca com um caminho de ~151 letras abaixo da
+# pasta do projeto (.venv\Lib\site-packages\torch-*.dist-info\licenses\...).
+# Sem "caminhos longos" ligados no Windows, o limite e 260 letras e o pip para
+# no meio com "No such file or directory". Folga para versoes futuras.
+LONGEST_INSIDE = 165
+WINDOWS_LIMIT = 259
+
+
+def _long_paths_on() -> bool:
+    try:
+        import winreg
+
+        with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, r"SYSTEM\CurrentControlSet\Control\FileSystem") as k:
+            return winreg.QueryValueEx(k, "LongPathsEnabled")[0] == 1
+    except OSError:
+        return False
+
+
+def checar_pasta() -> bool:
+    if os.name != "nt" or _long_paths_on():
+        return True
+    room = WINDOWS_LIMIT - LONGEST_INSIDE
+    if len(str(ROOT)) <= room:
+        return True
+    print(f"[ERRO] O caminho desta pasta e longo demais para o Windows ({len(str(ROOT))} letras, maximo {room}):")
+    print(f"       {ROOT}")
+    print("       Mova a pasta para um lugar mais curto, por exemplo C:\\clips-studio, e rode de novo.")
+    print("       (Ou ligue os caminhos longos do Windows, como administrador, no PowerShell:")
+    print("        New-ItemProperty -Path HKLM:\\SYSTEM\\CurrentControlSet\\Control\\FileSystem "
+          "-Name LongPathsEnabled -Value 1 -PropertyType DWORD -Force )")
+    return False
+
+
 def main(argv: list[str]) -> int:
+    if "--checar-pasta" in argv:
+        return 0 if checar_pasta() else 1
     ok = True
     if "--so-python" not in argv:
         ok &= reparar_electron()

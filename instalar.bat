@@ -61,6 +61,7 @@ if errorlevel 1 (
 rem ---- 4. Ambiente Python ---------------------------------------------------
 echo.
 echo [4/6] Bibliotecas Python (pasta .venv)
+%PYEXE% scripts\reparar_instalacao.py --checar-pasta || goto :fail
 if not exist ".venv\Scripts\python.exe" (
   %PYEXE% -m venv .venv || goto :fail
 )
