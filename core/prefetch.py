@@ -26,9 +26,12 @@ _PREFETCH_JOIN_TIMEOUT = 20 * 60  # seconds
 
 
 class Prefetcher:
-    def __init__(self, db_path: Path, downloads_dir: Path):
+    def __init__(self, db_path: Path, downloads_dir: Path, config: dict | None = None):
         self.db_path = db_path
         self.downloads_dir = downloads_dir
+        # Only read for `download.audio_first` / `audio_first_min_minutes`. None
+        # reads as the defaults: auto, over 90 minutes.
+        self.config = config or {}
         self._thread: threading.Thread | None = None
         self._video_id: str | None = None
         self._lock = threading.Lock()
@@ -61,6 +64,7 @@ class Prefetcher:
                 return
             # Vertical Live fetches the vertical version into its own file.
             vertical = bool(payload.get("vertical_live"))
+            from sources import dispatch
             from sources.dispatch import identify
 
             try:
@@ -72,9 +76,19 @@ class Prefetcher:
             name = f"{video_id}{SUFFIX}" if vertical else video_id
             if not video_id or (self.downloads_dir / f"{name}.mp4").exists():
                 return
+            # A job that will fetch its video audio first (core/pipeline.py)
+            # must not have the whole video pulled in ahead of it: the point
+            # is to never download the parts nobody uses. Whether THIS video
+            # is long enough is only known from its metadata, so the thread
+            # decides; here, whether the job could be audio-first at all.
+            audio_first = (dispatch.audio_first_mode(self.config) != "off"
+                           and dispatch.audio_first_blocker(payload) is None)
+            if audio_first and self._audio_ready(video_id):
+                return  # its audio is already here
             self._video_id = video_id
             self._thread = threading.Thread(
-                target=self._run, args=(url, video_id, vertical), daemon=True, name="download-prefetch"
+                target=self._run, args=(url, video_id, vertical) + ((True,) if audio_first else ()),
+                daemon=True, name="download-prefetch"
             )
             self._thread.start()
 
@@ -110,7 +124,18 @@ class Prefetcher:
                 if self._video_id == video_id:
                     self._thread, self._video_id = None, None
 
-    def _run(self, url: str, video_id: str, vertical: bool = False) -> None:
+    def _audio_ready(self, video_id: str) -> bool:
+        """Whether this video's audio was already prefetched."""
+        from sources import dispatch, ytdlp_common
+
+        scratch = dispatch.scratch_dir(self.downloads_dir, video_id)
+        try:
+            ytdlp_common.find_output(scratch, f"{video_id}.audio")
+            return True
+        except FileNotFoundError:
+            return False
+
+    def _run(self, url: str, video_id: str, vertical: bool = False, audio_first: bool = False) -> None:
         from core.state import StateDB
         from sources import dispatch
 
@@ -118,6 +143,8 @@ class Prefetcher:
         # background prefetch, not as progress of the currently running job.
         progress.set_thread_tags(stage="prefetch", prefetch=True)
         try:
+            if audio_first and self._prefetch_audio(url, video_id):
+                return
             print(f"      [prefetch] downloading next queued video ({video_id}) in the background")
             video = dispatch.download(url, self.downloads_dir, vertical=vertical)
             db = StateDB(self.db_path)  # sqlite: own connection on this thread
@@ -136,3 +163,26 @@ class Prefetcher:
             print(f"      [prefetch] ready: {video.title}")
         except Exception as e:
             print(f"      [prefetch] failed (the job will download normally): {e}")
+
+    def _prefetch_audio(self, url: str, video_id: str) -> bool:
+        """Fetch only the audio of the next video when it is long enough to be
+        audio first (the job then finds it in its scratch folder and downloads
+        the rest as sections). False when the video should be prefetched whole
+        as usual: short, live, or its length is not known."""
+        from core.state import StateDB
+        from sources import dispatch
+
+        source, _ = dispatch.identify(url)
+        info = dispatch.probe(url)
+        if info["is_live"] or not dispatch.wants_audio_first(self.config, source, info["duration"]):
+            return False
+        print(f"      [prefetch] downloading only the audio of the next queued video ({video_id})")
+        dispatch.download_audio(url, dispatch.scratch_dir(self.downloads_dir, video_id))
+        db = StateDB(self.db_path)  # sqlite: own connection on this thread
+        try:
+            db.upsert_video(video_id, title=info["title"], channel_name=info["channel"],
+                            duration=info["duration"])
+        finally:
+            db.conn.close()
+        print(f"      [prefetch] audio ready: {info['title']}")
+        return True

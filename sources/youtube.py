@@ -18,7 +18,15 @@ import yt_dlp
 from defusedxml import ElementTree as ET
 
 from core.models import DownloadedVideo
-from sources.ytdlp_common import cookies, extract_info, games_from_info, is_bot_check, progress_opts
+from sources.ytdlp_common import (
+    cookies,
+    download_audio_file,
+    download_section_files,
+    extract_info,
+    games_from_info,
+    is_bot_check,
+    progress_opts,
+)
 
 RSS_URL = "https://www.youtube.com/feeds/videos.xml?channel_id={}"
 _ATOM_NS = {
@@ -252,3 +260,37 @@ def download(url: str, output_dir: Path, vertical: bool = False) -> DownloadedVi
         games=games_from_info(info, "youtube"),
         description=str(info.get("description") or ""),
     )
+
+
+def download_audio(url: str, output_dir: Path) -> Path:
+    """Only the audio of a finished video (m4a when YouTube has it), for the
+    audio-first path (core/pipeline.py). The caller has already refused live
+    streams (dispatch.probe)."""
+    video_id = extract_video_id(url)
+    with _friendly_errors():
+        return download_audio_file(
+            video_id or "video", output_dir, lambda opts: extract_info(url, opts, download=True))
+
+
+def download_sections(url: str, ranges: list[tuple[float, float]], output_dir: Path,
+                      vertical: bool = False) -> list:
+    """Just these [start, end] ranges of the video, one file each, as
+    ytdlp_common.Section. The same formats as download(): the H.264 stream
+    the later stages decode quickly."""
+    video_id = extract_video_id(url)
+    fmt = {"format": (
+        "bv*[height<=1080][vcodec^=avc1]+ba[ext=m4a]"
+        "/bv*[height<=1080][ext=mp4][vcodec!^=av01]+ba[ext=m4a]"
+        "/b[ext=mp4]/b"
+    ), "merge_output_format": "mp4"}
+    if vertical:
+        from sources import vertical as vertical_src
+
+        fmt = {"format": vertical_src.YOUTUBE_FORMAT, "format_sort": vertical_src.FORMAT_SORT,
+               "merge_output_format": "mp4"}
+
+    def run(opts: dict) -> None:
+        extract_info(url, {**fmt, **opts}, download=True)
+
+    with _friendly_errors():
+        return download_section_files(video_id or "video", ranges, output_dir, run)

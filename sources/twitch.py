@@ -19,7 +19,13 @@ import yt_dlp
 
 from core.models import DownloadedVideo
 from sources.urlmatch import host_matches
-from sources.ytdlp_common import games_from_info, progress_opts
+from sources.ytdlp_common import (
+    AUDIO_FORMAT_HLS,
+    download_audio_file,
+    download_section_files,
+    games_from_info,
+    progress_opts,
+)
 
 _VOD_RE = re.compile(r"twitch\.tv/videos?/(\d+)", re.IGNORECASE)
 
@@ -108,3 +114,46 @@ def download(url: str, output_dir: Path, vertical: bool = False) -> DownloadedVi
         channel=info.get("uploader") or info.get("channel") or "",
         games=games_from_info(info, "twitch"),
     )
+
+
+def _vod_id_or_raise(url: str) -> str:
+    video_id = extract_vod_id(url)
+    if video_id is None:
+        # A viewer clip is seconds long: there is nothing to save by cutting it.
+        raise ValueError("Only a Twitch VOD can be downloaded in parts.")
+    return video_id
+
+
+def download_audio(url: str, output_dir: Path) -> Path:
+    """Only the audio of a VOD, for the audio-first path. Twitch lists an
+    audio-only rendition; if a VOD has none, the smallest one is taken and its
+    video dropped."""
+    video_id = _vod_id_or_raise(url)
+
+    def run(opts: dict) -> None:
+        with yt_dlp.YoutubeDL(opts) as ydl:
+            ydl.extract_info(url, download=True)
+
+    return download_audio_file(video_id, output_dir, run, fmt=AUDIO_FORMAT_HLS)
+
+
+def download_sections(url: str, ranges: list[tuple[float, float]], output_dir: Path,
+                      vertical: bool = False) -> list:
+    """Just these [start, end] ranges of a VOD, one file each
+    (ytdlp_common.Section). A VOD is HLS: yt-dlp hands the range to ffmpeg,
+    which fetches only the segments that cover it."""
+    video_id = _vod_id_or_raise(url)
+    from sources import vertical as vertical_src
+
+    fmt = vertical_src.HLS_FORMAT if vertical else "best[ext=mp4]/best"
+
+    def run(opts: dict) -> None:
+        with yt_dlp.YoutubeDL({**opts, "format": fmt, "merge_output_format": "mp4"}) as ydl:
+            ydl.extract_info(url, download=True)
+
+    try:
+        return download_section_files(video_id, ranges, output_dir, run)
+    except yt_dlp.utils.DownloadError as e:
+        if vertical and vertical_src.is_missing_format(str(e)):
+            raise ValueError(vertical_src.no_vertical_version("twitch")) from e
+        raise

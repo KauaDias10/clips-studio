@@ -170,3 +170,165 @@ def download(url: str, output_dir: Path, vertical: bool = False) -> DownloadedVi
         if note:
             e.args = (f"{e}\n\n{note}",)
         raise
+
+
+# ---- audio first --------------------------------------------------------
+#
+# For a long remote video the pipeline downloads the audio, picks the moments
+# from it, and then downloads only those ranges (core/pipeline.py). The
+# decision, the probe it needs and the downloads live here, next to download().
+
+AUDIO_FIRST_MODES = ("auto", "on", "off")
+AUDIO_FIRST_MIN_MINUTES = 90.0
+# Audio and section files are scratch: kept in their own folder, so they are
+# never taken for the finished source file (core.paths.cached_source only reads
+# files directly inside downloads/).
+AUDIO_FIRST_DIR = "_audio_first"
+
+
+def audio_first_mode(config: dict | None) -> str:
+    """`download.audio_first` as "auto", "on" or "off". Anything else (a typo,
+    a YAML true/false) is read as it was meant where that is clear, and as
+    "auto" otherwise; a config with no such key is "auto"."""
+    value = ((config or {}).get("download") or {}).get("audio_first", "auto")
+    if value is True:
+        return "on"
+    if value is False:
+        return "off"
+    value = str(value).strip().lower()
+    if value in ("true", "yes", "1"):
+        return "on"
+    if value in ("false", "no", "0"):
+        return "off"
+    return value if value in AUDIO_FIRST_MODES else "auto"
+
+
+def audio_first_min_seconds(config: dict | None) -> float:
+    """`download.audio_first_min_minutes` in seconds (default 90)."""
+    raw = ((config or {}).get("download") or {}).get("audio_first_min_minutes", AUDIO_FIRST_MIN_MINUTES)
+    try:
+        minutes = float(raw)
+    except (TypeError, ValueError):
+        minutes = AUDIO_FIRST_MIN_MINUTES
+    return max(0.0, minutes) * 60.0
+
+
+def wants_audio_first(config: dict | None, source: str, duration: float | None) -> bool:
+    """Whether this remote video is fetched audio first: never off, never a
+    local file; "on" for any remote video; "auto" only when the platform's
+    metadata gave a length and it is over the threshold (without a length
+    there is nothing to say it is long, so it is downloaded as always)."""
+    mode = audio_first_mode(config)
+    if mode == "off" or source == "local":
+        return False
+    if mode == "on":
+        return True
+    return bool(duration) and float(duration) > audio_first_min_seconds(config)
+
+
+# What the audio-first path cannot serve, as the job's own option names (the
+# config's `clips` section and the queued job's payload use the same ones).
+# Each reads the picture of the whole video, or hands it to something else:
+# a whole-video clip, a plugin's pipeline or steps, a match (its scoreboard and
+# its look at the frames), a stream already vertical, and Longform.
+_NEEDS_THE_VIDEO = {
+    "whole": "the whole video is the clip",
+    "longform": "Longform cuts the whole video",
+    "pipeline": "a plugin pipeline reads the video",
+    "rate": "a plugin step reads the video",
+    "understand": "a plugin step reads the video",
+    "edit": "a plugin step reads the video",
+    "sport": "a match is read from its picture",
+    "vertical_live": "a Vertical Live keeps the whole stream",
+}
+
+
+def audio_first_blocker(options: dict | None) -> str | None:
+    """Why a job cannot be fetched audio first (a sentence for the log), or
+    None when it can. `options` is the config's `clips` section or a job
+    payload."""
+    for key, why in _NEEDS_THE_VIDEO.items():
+        if (options or {}).get(key):
+            return why
+    return None
+
+
+def scratch_dir(output_dir: Path, video_id: str) -> Path:
+    """Where a video's audio and section files go while a job runs."""
+    return output_dir / AUDIO_FIRST_DIR / video_id
+
+
+def probe(url: str) -> dict:
+    """What the platform says about a remote video, without downloading:
+    {"duration", "is_live", "title", "channel"}. Raises like download() when
+    the video is gone or the link is wrong."""
+    source, _ = identify(url)
+    if source == "local":
+        raise ValueError("local uploads carry no remote metadata")
+    try:
+        if source == "kick":
+            info, _web = kick.probe(url)
+        else:
+            from sources.ytdlp_common import extract_info
+
+            opts = {"quiet": True, "no_warnings": True, "skip_download": True}
+            if source == "youtube":
+                with youtube._friendly_errors():
+                    info = extract_info(url, opts)
+            else:
+                info = extract_info(url, opts)
+    except Exception as e:
+        note = ytdlp_common.failure_note(e)
+        if note:
+            e.args = (f"{e}\n\n{note}",)
+        raise
+    return {
+        "duration": float(info.get("duration") or 0),
+        "is_live": bool(info.get("is_live")),
+        "title": info.get("title") or "",
+        "channel": info.get("channel") or info.get("uploader") or "",
+        "games": ytdlp_common.games_from_info(info, source),
+        "description": str(info.get("description") or ""),
+    }
+
+
+def download_audio(url: str, output_dir: Path) -> Path:
+    """Only the audio of a remote video, as a file in `output_dir`: the first
+    step of the audio-first path. Same error handling as download()."""
+    source, _ = identify(url)
+    if source == "local":
+        raise ValueError("A local file has nothing to download.")
+    try:
+        if source == "twitch":
+            return twitch.download_audio(url, output_dir)
+        if source == "kick":
+            return kick.download_audio(url, output_dir)
+        return youtube.download_audio(url, output_dir)
+    except Exception as e:
+        note = ytdlp_common.failure_note(e)
+        if note:
+            e.args = (f"{e}\n\n{note}",)
+        raise
+
+
+def download_sections(url: str, ranges: list[tuple[float, float]], output_dir: Path,
+                      vertical: bool = False) -> list[ytdlp_common.Section]:
+    """Only these [start, end] ranges (seconds into the whole video) of a
+    remote video, one file per range, as Sections that record where each
+    starts in the whole. Raises when a platform cannot do it, and the caller
+    downloads the whole video instead. YouTube, Twitch VODs and Kick VODs do
+    it (yt-dlp download_ranges); a local file and a viewer clip do not."""
+    source, _ = identify(url)
+    if source == "local":
+        raise ValueError("A local file has nothing to download.")
+    try:
+        if source == "twitch":
+            return twitch.download_sections(url, ranges, output_dir, vertical=vertical)
+        if source == "kick":
+            return kick.download_sections(url, ranges, output_dir, vertical=vertical)
+        return youtube.download_sections(url, ranges, output_dir, vertical=vertical)
+    except Exception as e:
+        note = ytdlp_common.failure_note(e)
+        if note:
+            e.args = (f"{e}\n\n{note}",)
+        raise

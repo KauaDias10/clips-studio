@@ -18,7 +18,13 @@ import yt_dlp
 
 from core.models import DownloadedVideo
 from sources.urlmatch import host_matches
-from sources.ytdlp_common import games_from_info, progress_opts
+from sources.ytdlp_common import (
+    AUDIO_FORMAT_HLS,
+    download_audio_file,
+    download_section_files,
+    games_from_info,
+    progress_opts,
+)
 
 _UUID = r"[0-9a-fA-F]{8}(?:-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}"
 _VOD_RE = re.compile(rf"kick\.com/(?:video/|[\w.-]+/videos/)({_UUID})", re.IGNORECASE)
@@ -207,3 +213,65 @@ def download(url: str, output_dir: Path, vertical: bool = False) -> DownloadedVi
         channel=info.get("uploader") or info.get("channel") or "",
         games=games_from_info(info, "kick"),
     )
+
+
+def probe(url: str) -> tuple[dict, dict | None]:
+    """(what Kick says about the VOD, the newer-API record when that was what
+    found it), without downloading. Same lookups and the same "deleted" and
+    "still live" answers as download(), for the audio-first path."""
+    if extract_vod_id(url) is None:
+        raise ValueError("Only Kick VODs are supported.")
+    web = None
+    with yt_dlp.YoutubeDL({"quiet": True, "no_warnings": True, **_impersonation()}) as ydl:
+        try:
+            info = ydl.extract_info(url, download=False)
+        except yt_dlp.utils.DownloadError as e:
+            if "404" not in str(e):
+                raise
+            web = _from_web_api(ydl, url)
+            if web is None:
+                raise ValueError(_GONE) from e
+            info = web
+    return info, web
+
+
+def download_audio(url: str, output_dir: Path) -> Path:
+    """Only the audio of a VOD, for the audio-first path. Kick's HLS has no
+    audio-only rendition as a rule: the smallest one is taken and its video
+    dropped."""
+    video_id = extract_vod_id(url)
+    if video_id is None:
+        raise ValueError("Only Kick VODs are supported.")
+    _info, web = probe(url)
+
+    def run(opts: dict) -> None:
+        with yt_dlp.YoutubeDL({**opts, **_impersonation()}) as ydl:
+            with _gone_or_raise():
+                ydl.extract_info(web["url"] if web else url, download=True)
+
+    return download_audio_file(video_id, output_dir, run, fmt=AUDIO_FORMAT_HLS)
+
+
+def download_sections(url: str, ranges: list[tuple[float, float]], output_dir: Path,
+                      vertical: bool = False) -> list:
+    """Just these [start, end] ranges of a VOD, one file each
+    (ytdlp_common.Section), the way a Twitch VOD's HLS is fetched."""
+    video_id = extract_vod_id(url)
+    if video_id is None:
+        raise ValueError("Only Kick VODs are supported.")
+    _info, web = probe(url)
+    from sources import vertical as vertical_src
+
+    fmt = vertical_src.HLS_FORMAT if vertical else "best[ext=mp4]/best"
+
+    def run(opts: dict) -> None:
+        with yt_dlp.YoutubeDL({**opts, **_impersonation(), "format": fmt, "merge_output_format": "mp4"}) as ydl:
+            with _gone_or_raise():
+                ydl.extract_info(web["url"] if web else url, download=True)
+
+    try:
+        return download_section_files(video_id, ranges, output_dir, run)
+    except yt_dlp.utils.DownloadError as e:
+        if vertical and vertical_src.is_missing_format(str(e)):
+            raise ValueError(vertical_src.no_vertical_version("kick")) from e
+        raise
