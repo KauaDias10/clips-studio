@@ -74,16 +74,20 @@ export default function LiveTextOverlay({
   // Frosted strip over text that's ALREADY burned into the preview file, so
   // the old caption/hook doesn't ghost through behind the pending one.
   const burnedLine = overlay.burned?.lines.find((l) => t >= l.start && t <= l.end)
-  const maskBand = (position: string, fontSizeAss: number, marginAss: number): JSX.Element => {
+  const maskBand = (position: string, fontSizeAss: number, marginAss: number, text = ''): JSX.Element => {
     const size = Math.max(40, Math.min(140, fontSizeAss)) * s
+    // As tall as the burned line really is (it wraps past ~16 letters at the
+    // usual sizes), not a fixed three lines that stuck out as a blurred band.
+    const rows = text.length > 16 * (90 / Math.max(40, Math.min(140, fontSizeAss))) ? 2 : 1
+    const height = size * (rows * 1.3 + 0.5)
     const band: React.CSSProperties =
       position === 'custom'
-        ? { bottom: `${100 - (overlay.burned?.style.caption_y ?? 77)}%`, height: size * 3 }
+        ? { bottom: `${100 - (overlay.burned?.style.caption_y ?? 77)}%`, height }
         : position === 'top'
-        ? { top: Math.max(0, marginAss * s - size * 0.35), height: size * 3 }
+        ? { top: Math.max(0, marginAss * s - size * 0.25), height }
         : position === 'middle'
-          ? { top: '50%', transform: 'translateY(-50%)', height: size * 3 }
-          : { bottom: Math.max(0, marginAss * s - size * 0.35), height: size * 3 }
+          ? { top: '50%', transform: 'translateY(-50%)', height }
+          : { bottom: Math.max(0, marginAss * s - size * 0.25), height }
     return (
       <div
         className="absolute inset-x-0"
@@ -119,19 +123,9 @@ export default function LiveTextOverlay({
     >
       {/* The banner already burned into the file, frosted over, and the new one on top. */}
       {overlay.banner?.burned && (
-        <div
-          className="absolute"
-          style={{
-            left: `${overlay.banner.burned.title_banner_x}%`,
-            top: `${overlay.banner.burned.title_banner_y}%`,
-            width: '94%',
-            height: `${(((3 * 78 * overlay.banner.burned.title_banner_size) / 100) * 1.18 + 2 * overlay.banner.burned.title_banner_pad) / 19.2}%`,
-            transform: 'translate(-50%, -50%)',
-            borderRadius: 10 * s,
-            backdropFilter: 'blur(16px)',
-            background: 'rgba(0,0,0,0.35)'
-          }}
-        />
+        // Exactly the old banner's lines, not a fixed 3-line strip: a fixed
+        // strip stuck out as a blurred band under a shorter title.
+        <BannerPreview style={overlay.banner.burned} title={overlay.banner.title} mask />
       )}
       {overlay.banner?.show && (
         <BannerPreview
@@ -168,11 +162,12 @@ export default function LiveTextOverlay({
         maskBand(
           overlay.burned.style.position,
           overlay.burned.style.font_size,
-          overlay.burned.style.position === 'top' ? 140 : 440
+          overlay.burned.style.position === 'top' ? 140 : 440,
+          burnedLine.text
         )}
       {overlay.burnedHook &&
         elapsed <= overlay.burnedHook.seconds &&
-        maskBand('top', 96, 190)}
+        maskBand('top', 96, 190, 'x'.repeat(40))}
       {showHook && overlay.hook && (
         <p
           className="absolute inset-x-0 text-center font-black leading-tight"

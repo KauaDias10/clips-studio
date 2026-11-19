@@ -888,6 +888,14 @@ export default function TimelineEditor({
   const layoutDirty = layout !== storedCrop
   const gamingDirty = JSON.stringify(gaming) !== JSON.stringify(storedGaming)
   const styleDirty = JSON.stringify(captionStyle) !== JSON.stringify(storedStyle)
+  // The title banner's settings and the captions' settings live in one style,
+  // but the live overlay treats them apart: changing a caption colour must not
+  // frost over the banner already in the video, nor ticking the banner frost
+  // over the captions.
+  const pick = (s: Required<CaptionStyle>, banner: boolean): string =>
+    JSON.stringify(Object.entries(s).filter(([k]) => k.startsWith('title_banner') === banner))
+  const bannerStyleDirty = pick(captionStyle, true) !== pick(storedStyle, true)
+  const captionStyleDirty = pick(captionStyle, false) !== pick(storedStyle, false)
   const captionsDirty = captionsOn !== storedCaptionsOn
   const wmDirty = JSON.stringify(watermark) !== JSON.stringify(storedWatermark)
   const dirty =
@@ -942,7 +950,7 @@ export default function TimelineEditor({
           ? edit.hook
           : null
       const capsDirty =
-        styleDirty ||
+        captionStyleDirty ||
         wordEdits.length > 0 ||
         speakerDirty ||
         edit.muted_words.length > (baked?.muted_words?.length ?? 0)
@@ -974,7 +982,7 @@ export default function TimelineEditor({
       }
       // The title banner, when its style changed: drawn live over the video.
       const bannerPending =
-        styleDirty && (captionStyle.title_banner || storedStyle.title_banner)
+        bannerStyleDirty && (captionStyle.title_banner || storedStyle.title_banner)
           ? {
               style: captionStyle,
               title: clip.title || clip.hook || '',

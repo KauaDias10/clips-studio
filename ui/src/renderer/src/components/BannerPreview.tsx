@@ -90,7 +90,8 @@ export default function BannerPreview({
   title,
   dragging = false,
   handlers,
-  hint
+  hint,
+  mask = false
 }: {
   style: Required<CaptionStyle>
   /** The words shown: the clip's title, or the person's own words in the style. */
@@ -102,6 +103,10 @@ export default function BannerPreview({
     'onPointerDown' | 'onPointerMove' | 'onPointerUp' | 'onPointerCancel'
   >
   hint?: string
+  /** Draw only a frosted patch the exact size of this banner: laid over the
+   *  banner already burned into the preview file, so the old one does not
+   *  show through behind a pending change, and nothing around it is blurred. */
+  mask?: boolean
 }): JSX.Element | null {
   const text = cleanTitle(style.title_banner_text.trim() || title, style.title_banner_uppercase)
   if (!text) return null
@@ -124,6 +129,38 @@ export default function BannerPreview({
     fontStyle: style.title_banner_italic ? 'italic' : 'normal',
     letterSpacing: cq(clamp(style.title_banner_spacing, 0, -4, 24)),
     whiteSpace: 'nowrap'
+  }
+  if (mask) {
+    return (
+      <div
+        aria-hidden
+        className="absolute pointer-events-none"
+        style={{
+          left: `${style.title_banner_x}%`,
+          top: `${style.title_banner_y}%`,
+          transform: `translate(-50%, -50%) rotate(${-clamp(style.title_banner_tilt, 0, -20, 20)}deg)`
+        }}
+      >
+        <div className="relative">
+          <div
+            className="absolute"
+            style={{
+              inset: `-${cq(Math.max(12, pad))}`,
+              borderRadius: cq(16),
+              backdropFilter: 'blur(16px)',
+              background: 'rgba(0,0,0,0.35)'
+            }}
+          />
+          <div className="relative flex flex-col items-center">
+            {lines.map((line, i) => (
+              <div key={i} style={{ ...letters, color: 'transparent' }}>
+                {line}
+              </div>
+            ))}
+          </div>
+        </div>
+      </div>
+    )
   }
   // The box layer and the words layer lie exactly on top of each other, the
   // words above: a box never covers a letter (the burn does the same).
