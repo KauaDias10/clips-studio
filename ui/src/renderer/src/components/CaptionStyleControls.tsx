@@ -3,6 +3,11 @@ import type { CaptionStyle } from '../lib/types'
 import { t } from '../lib/i18n'
 import BannerPreview from './BannerPreview'
 
+/** "Cover only": the title stays on the first frames alone, so it is the
+ *  thumbnail and is gone once the clip plays. A tenth of a second is three
+ *  frames at 30 fps, enough to survive a re-encode keeping the first frame. */
+export const COVER_SECONDS = 0.1
+
 export const DEFAULT_CAPTION_STYLE: Required<CaptionStyle> = {
   font: 'Arial',
   font_size: 84,
@@ -653,9 +658,11 @@ export default function CaptionStyleControls({
               </div>
               <div>
                 <label htmlFor={`${idPrefix}-banner-secs`} className="label">
-                  {style.title_banner_seconds > 0
-                    ? `${t('Time on screen')} (${style.title_banner_seconds}s)`
-                    : `${t('Time on screen')} (${t('whole clip')})`}
+                  {style.title_banner_seconds === COVER_SECONDS
+                    ? `${t('Time on screen')} (${t('cover only')})`
+                    : style.title_banner_seconds > 0
+                      ? `${t('Time on screen')} (${style.title_banner_seconds}s)`
+                      : `${t('Time on screen')} (${t('whole clip')})`}
                 </label>
                 <input
                   id={`${idPrefix}-banner-secs`}
@@ -663,10 +670,20 @@ export default function CaptionStyleControls({
                   min={0}
                   max={30}
                   step={0.5}
-                  className="mt-2 w-full accent-[#38BDF8]"
+                  disabled={style.title_banner_seconds === COVER_SECONDS}
+                  className="mt-2 w-full accent-[#38BDF8] disabled:opacity-40"
                   value={style.title_banner_seconds}
                   onChange={(e) => onChange('title_banner_seconds', Number(e.target.value))}
                 />
+                <label className="mt-2 flex items-center gap-2 text-sm text-ink">
+                  <input
+                    type="checkbox"
+                    className="size-4 accent-[#38BDF8]"
+                    checked={style.title_banner_seconds === COVER_SECONDS}
+                    onChange={(e) => onChange('title_banner_seconds', e.target.checked ? COVER_SECONDS : 0)}
+                  />
+                  {t('Only on the first frame (cover)')}
+                </label>
               </div>
               <div>
                 <label htmlFor={`${idPrefix}-banner-x`} className="label">

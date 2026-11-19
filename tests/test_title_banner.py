@@ -99,6 +99,17 @@ def test_more_fonts_and_script_swap_still_works():
     assert caption_font_for("pt", "Bahnschrift") == "Bahnschrift"
 
 
+def test_cover_only_title_is_gone_after_the_first_frames(tmp_path):
+    # The editor's "Only on the first frame (cover)" sets 0.1 s (COVER_SECONDS).
+    b = tb.layout("Titulo", style={"title_banner_seconds": 0.1})
+    assert b.seconds == 0.1
+    ass = tb.ensure_banner(None, tmp_path / "t.ass", b).read_text(encoding="utf-8")
+    assert "0:00:00.00,0:00:00.10,Banner" in ass
+    assert "9:59:59.00" not in ass
+    # Captions go back to their own place as soon as the cover is gone.
+    assert tb.caption_placement(b)["anchor_until"] == 0.1
+
+
 def test_time_on_screen_and_thickness(tmp_path):
     b = tb.layout("Titulo", style={"title_banner_seconds": 4.5, "title_banner_pad": 40})
     assert b.seconds == 4.5 and b.pad == 40

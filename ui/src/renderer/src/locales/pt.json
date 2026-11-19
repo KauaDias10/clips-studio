@@ -338,6 +338,8 @@
   "Show words as they're said": "Mostrar as palavras conforme são ditas",
   "Time on screen": "Tempo na tela",
   "whole clip": "corte inteiro",
+  "cover only": "só a capa",
+  "Only on the first frame (cover)": "Só no primeiro quadro (capa)",
   "Each word shows up the moment it is said, instead of the whole line appearing ahead of the voice.": "Cada palavra aparece no momento em que é dita, em vez da frase inteira aparecer antes da voz.",
   "Branding": "Marca",
   "Add the Clips Kitty end card to every clip": "Adicionar o cartão final do Clips Kitty no fim de cada corte",
