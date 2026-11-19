@@ -97,7 +97,8 @@ def test_the_live_clip_job_makes_one_clip_of_the_seconds(monkeypatch, tmp_path):
     monkeypatch.setattr(pipeline, "create_backend", lambda *a: None)
     monkeypatch.setattr(pipeline, "_with_usable_model", lambda c: c)
     monkeypatch.setattr(metadata, "generate_metadata_batch",
-                        lambda c, s, title, llm: [metadata.ClipMetadata("Ele caiu do prédio", "d", ["#gta"])])
+                        lambda c, s, title, llm, **kw: (seen.__setitem__("title_lang", kw.get("language"))
+                                                        or [metadata.ClipMetadata("Ele caiu do prédio", "d", ["#gta"])]))
 
     def render(source, cand, segs, clip_dir, cfg, opts, lang):
         seen.update(window=(cand.start, cand.end), opts=opts, lang=lang)
@@ -119,5 +120,6 @@ def test_the_live_clip_job_makes_one_clip_of_the_seconds(monkeypatch, tmp_path):
     clip_job.run_live_clip(DB(), cfg, {"video_id": "live_x_1", "start": 4.0, "end": 37.0, "channel": "x",
                                        "reason": "chat: laughing", "kind": "chat", "stream_title": "GTA RP"})
     assert seen["window"] == (4.0, 37.0) and seen["lang"] == "pt"
+    assert seen["title_lang"] == "pt"  # the title is written in the stream's language
     assert seen["title"] == "Ele caiu do prédio" and seen["opts"]["title_text"] == "Ele caiu do prédio"
     assert seen["video"] == ("live_x_1", "GTA RP (ao vivo)", "x") and seen["status"] == "done"

@@ -50,11 +50,27 @@ class ClipMetadata:
     hashtags: list[str] = field(default_factory=list)
 
 
+def language_rule(language: str | None) -> str:
+    """The line that makes the model write in the clip's language. The prompts
+    are in English, and without this a model answers in English even for a
+    Portuguese stream. "" (or "auto", or English) leaves the prompt as it was."""
+    code = (language or "").strip().lower()
+    if not code or code == "auto" or code.startswith("en"):
+        return ""
+    from multilingual.languages import prompt_name
+
+    name = prompt_name(code) or code
+    return (f"LANGUAGE: write every title, description and hashtag in {name} "
+            f"(the language the clip is spoken in), not in English, even though these "
+            f"instructions are in English.")
+
+
 def generate_metadata(
     candidate: ClipCandidate,
     segments: list[Segment],
     video_title: str,
     llm: LLMBackend,
+    language: str = "",
 ) -> ClipMetadata:
     clip_text = " ".join(
         s.text for s in segments if s.end > candidate.start and s.start < candidate.end
@@ -63,8 +79,11 @@ def generate_metadata(
     if not clip_text:
         return fallback
 
+    template = PROMPT_PATH.read_text(encoding="utf-8")
+    if rule := language_rule(language):
+        template = template.replace("CLIP TRANSCRIPT:", rule + "\n\nCLIP TRANSCRIPT:")
     prompt = (
-        PROMPT_PATH.read_text(encoding="utf-8")
+        template
         .replace("{video_title}", video_title)
         .replace("{clip_text}", clip_text)
     )
@@ -93,6 +112,7 @@ def generate_metadata_batch(
     batch_size: int = 8,
     creator_context: str = "",
     rules: str = "",
+    language: str = "",
 ) -> list[ClipMetadata]:
     """Metadata for ALL clips in a few LLM calls instead of one per clip —
     on a long stream this cuts dozens of model calls from the analysis time.
@@ -100,9 +120,13 @@ def generate_metadata_batch(
     creator_context (optional): learned facts about the creator — series
     names, running jokes, collaborators — for more accurate titles/hashtags.
     rules (optional): a sport's own rules for its clips' titles (basketball:
-    which player to name); "" for every other job, whose prompt is unchanged."""
+    which player to name); "" for every other job, whose prompt is unchanged.
+    language (optional): the clips' language code; titles are written in it
+    (see language_rule)."""
     results: list[ClipMetadata] = [_fallback(c, video_title) for c in candidates]
     template = BATCH_PROMPT_PATH.read_text(encoding="utf-8")
+    if rule := language_rule(language):
+        template = template.replace("{clips}", rule + "\n\n{clips}")
     if rules:
         template = template.replace("{clips}", "RULES FOR THESE CLIPS:\n" + rules + "\n\n{clips}")
     if creator_context:

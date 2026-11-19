@@ -676,10 +676,14 @@ def _process_video(url: str, config: dict, db: StateDB, force: bool = False) -> 
     print(f"      Writing titles & hashtags for {len(candidates)} clip(s) (batched)...")
     # A sport's own rules for its clips' titles (basketball: which player to name).
     title_rules = getattr(sport_profile, "title_rules", None) if sport_profile is not None else None
+    # Titles in the video's own language (a Portuguese stream gets Portuguese
+    # titles), unless clips.title_language names one for every video.
+    title_lang = (config["clips"].get("title_language") or "").strip() or content_lang
     metas = generate_metadata_batch(
         candidates, segments, video.title, llm,
         creator_context=(creator_ctx.summary if creator_ctx else ""),
         **({"rules": title_rules()} if title_rules is not None else {}),
+        language=title_lang,
     )
     if whole:
         for meta in metas:
@@ -690,7 +694,8 @@ def _process_video(url: str, config: dict, db: StateDB, force: bool = False) -> 
     if check_titles is not None:
         metas = check_titles(candidates, metas, lambda clips, rules: generate_metadata_batch(
             clips, segments, video.title, llm,
-            creator_context=(creator_ctx.summary if creator_ctx else ""), rules=rules))
+            creator_context=(creator_ctx.summary if creator_ctx else ""), rules=rules,
+            language=title_lang))
 
     # Hashtags the request insisted on (chat: "put #creatorname on all of
     # them"). Appended after generation rather than asked of the model: a

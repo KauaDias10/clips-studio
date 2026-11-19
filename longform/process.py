@@ -151,7 +151,13 @@ def process_longform(url: str, config: dict, db: StateDB, options: dict) -> None
         return
 
     print(f"[4/4] Rendering {len(candidates)} landscape clip(s) (1920x1080)...")
-    metas = generate_metadata_batch(candidates, segments, video.title, llm)
+    from transcription.transcriber import detected_language
+
+    spoken = forced_lang if forced_lang != "auto" else detected_language(
+        video.video_id, data_dir / "transcripts")
+    metas = generate_metadata_batch(
+        candidates, segments, video.title, llm,
+        language=(config["clips"].get("title_language") or "").strip() or spoken)
     candidates = [replace(c, start=c.start + _NUDGE, end=c.end + _NUDGE) for c in candidates]
 
     clip_dir = (

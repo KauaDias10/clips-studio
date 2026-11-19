@@ -2,7 +2,7 @@
 #   QUICK SETUP — edit these lines, ignore everything below
 # ==============================================================
 
-model: gemma3:4b       # your AI model (see: python main.py models)
+model: gemma4:12b       # your AI model (see: python main.py models)
 channel: ""            # your channel, e.g. "@YourHandle"
 
 content_language: auto # language of the streams you clip: auto = detect per
@@ -63,6 +63,8 @@ clips:
                         # purpose: creators pick what to post — a ~2h stream
                         # should yield ~50 clips to choose from.
   max_clips_per_video: 0  # 0 = automatic: keep every clip that passes min_score
+  title_language: ""    # language of titles/descriptions/hashtags: "" = the
+                        # video's own language; or a code such as pt, en, es
   min_duration: 10      # seconds — clips land on sentence boundaries, so real
   max_duration: 60      # lengths vary naturally across this 10-60s range
                         # (turn on the 60s+ toggle for TikTok-length clips)

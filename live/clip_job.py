@@ -95,7 +95,10 @@ def run_live_clip(db, config: dict, payload: dict) -> None:
     else:
         try:
             llm = pipeline.create_backend(pipeline._with_usable_model(cfg["llm"]))
-            meta = generate_metadata_batch([candidate], segments, stream_title, llm)[0]
+            meta = generate_metadata_batch(
+                [candidate], segments, stream_title, llm,
+                language=(cfg.get("clips", {}).get("title_language") or "").strip() or lang,
+            )[0]
         except Exception as e:
             print(f"      Title from the model failed ({e}); using the stream's title")
     if meta is None or not meta.title:
