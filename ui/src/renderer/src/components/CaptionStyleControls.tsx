@@ -92,8 +92,153 @@ export const BANNER_PRESETS: { id: string; label: string; hint: string; style: P
       title_banner_spacing: 2,
       title_banner_uppercase: true
     }
+  },
+  // The looks below start from LOOK so a click never keeps a gradient, tilt
+  // or shadow left over from the previous look.
+  {
+    id: 'pink-cyan',
+    label: 'Pink and cyan',
+    hint: 'Light cyan letters in a full pink box, at the top. A favourite saved from the editor.',
+    style: look({
+      title_banner_font: 'Impact',
+      title_banner_box: 'block',
+      title_banner_color: '#F547A7',
+      title_banner_text_color: '#C5F7F7',
+      title_banner_size: 125,
+      title_banner_pad: 60,
+      title_banner_spacing: 8,
+      title_banner_x: 50,
+      title_banner_y: 9,
+      title_banner_captions: 'keep'
+    })
+  },
+  {
+    id: 'news',
+    label: 'Breaking news',
+    hint: 'Black letters on a yellow box: reads at a glance, like a news alert.',
+    style: look({
+      title_banner_font: 'Anton',
+      title_banner_box: 'block',
+      title_banner_color: '#FFD400',
+      title_banner_text_color: '#111111',
+      title_banner_size: 115,
+      title_banner_pad: 30,
+      title_banner_spacing: 2
+    })
+  },
+  {
+    id: 'clean',
+    label: 'Clean white',
+    hint: 'Black letters in a white box round each line, simple and tidy.',
+    style: look({
+      title_banner_font: 'Montserrat Black',
+      title_banner_box: 'lines',
+      title_banner_color: '#FFFFFF',
+      title_banner_text_color: '#111111',
+      title_banner_pad: 22
+    })
+  },
+  {
+    id: 'outline',
+    label: 'Thick outline',
+    hint: 'Big white letters with a thick black outline and no box, the YouTuber classic.',
+    style: look({
+      title_banner_font: 'Montserrat Black',
+      title_banner_box: 'none',
+      title_banner_text_color: '#FFFFFF',
+      title_banner_outline: 10,
+      title_banner_outline_color: '#000000',
+      title_banner_shadow: 6,
+      title_banner_shadow_color: '#000000',
+      title_banner_size: 140
+    })
+  },
+  {
+    id: 'black-bar',
+    label: 'Black bar',
+    hint: 'White letters on a see-through black bar: goes with any video.',
+    style: look({
+      title_banner_font: 'Bebas Neue',
+      title_banner_box: 'block',
+      title_banner_color: '#000000',
+      title_banner_opacity: 80,
+      title_banner_text_color: '#FFFFFF',
+      title_banner_size: 135,
+      title_banner_pad: 26,
+      title_banner_spacing: 3
+    })
+  },
+  {
+    id: 'fire',
+    label: 'Fire',
+    hint: 'Yellow to orange to red letters, dark outline, slightly tilted. Loud and hot.',
+    style: look({
+      title_banner_font: 'Anton',
+      title_banner_box: 'none',
+      title_banner_text_color: '#FFF35C',
+      title_banner_gradient_mid: '#FF8A00',
+      title_banner_gradient: '#E0181B',
+      title_banner_outline: 8,
+      title_banner_outline_color: '#1A0500',
+      title_banner_shadow: 6,
+      title_banner_shadow_color: '#000000',
+      title_banner_size: 150,
+      title_banner_tilt: -3
+    })
+  },
+  {
+    id: 'neon',
+    label: 'Green neon',
+    hint: 'Neon green letters with a glow, no box. Made for gaming.',
+    style: look({
+      title_banner_font: 'Bebas Neue',
+      title_banner_box: 'none',
+      title_banner_text_color: '#39FF14',
+      title_banner_outline: 6,
+      title_banner_outline_color: '#04210A',
+      title_banner_shadow: 10,
+      title_banner_shadow_color: '#1B8F0A',
+      title_banner_size: 160,
+      title_banner_spacing: 4
+    })
+  },
+  {
+    id: 'purple',
+    label: 'Stream purple',
+    hint: 'White letters in a purple box round each line, the streaming colour.',
+    style: look({
+      title_banner_font: 'Montserrat Black',
+      title_banner_box: 'lines',
+      title_banner_color: '#9146FF',
+      title_banner_text_color: '#FFFFFF',
+      title_banner_size: 105,
+      title_banner_pad: 24
+    })
   }
 ]
+
+/** A look's own values over a neutral start: no gradient, outline, shadow,
+ *  tilt or italics unless the look asks for them. Position and where the
+ *  captions sit are left as the person set them unless the look says. */
+function look(own: Partial<CaptionStyle>): Partial<CaptionStyle> {
+  return {
+    title_banner: true,
+    title_banner_gradient: '',
+    title_banner_gradient_mid: '',
+    title_banner_outline: 0,
+    title_banner_outline_color: '#000000',
+    title_banner_shadow: 0,
+    title_banner_shadow_color: '',
+    title_banner_size: 100,
+    title_banner_pad: 18,
+    title_banner_opacity: 100,
+    title_banner_tilt: 0,
+    title_banner_italic: false,
+    title_banner_spacing: 0,
+    title_banner_uppercase: true,
+    ...own
+  }
+}
 
 // Banner geometry at 1080x1920, as video_editor/title_banner.py lays it out.
 const BANNER_FONT = 78
@@ -507,6 +652,18 @@ export default function CaptionStyleControls({
                       key={p.id}
                       type="button"
                       className="btn-ghost text-xs"
+                      // A swatch of the look itself: its box colour, letters and font.
+                      style={{
+                        background:
+                          p.style.title_banner_box === 'none' ? '#1E293B' : p.style.title_banner_color,
+                        color: p.style.title_banner_text_color,
+                        fontFamily: `'${p.style.title_banner_font}', sans-serif`,
+                        WebkitTextStroke:
+                          (p.style.title_banner_outline ?? 0) > 0
+                            ? `1px ${p.style.title_banner_outline_color}`
+                            : undefined,
+                        letterSpacing: '0.02em'
+                      }}
                       title={t(p.hint)}
                       onClick={() => {
                         for (const [k, v] of Object.entries(p.style)) {
